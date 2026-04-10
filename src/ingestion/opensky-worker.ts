@@ -247,7 +247,15 @@ function cleanupOldPositions(db: Database.Database): number {
 
 // ── Worker loop ────────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+let cleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Start the OpenSky ingestion worker.
+ * Can be called from server/index.ts (embedded) or standalone CLI.
+ * Returns a stop function for graceful shutdown.
+ */
+export async function startWorker(): Promise<() => void> {
   console.log("[opensky] Starting ADS-B ingestion worker...");
   console.log(`[opensky] Poll interval: ${POLL_INTERVAL_MS / 1000}s | Cleanup: every ${CLEANUP_INTERVAL_MS / 3_600_000}h | TTL: ${POSITION_TTL_SECONDS / 3600}h`);
 
@@ -259,7 +267,7 @@ async function main(): Promise<void> {
   let totalIngested = 0;
 
   // Poll loop
-  const pollTimer = setInterval(async () => {
+  pollTimer = setInterval(async () => {
     cycle++;
     const data = await fetchStates();
     if (data) {
@@ -276,23 +284,12 @@ async function main(): Promise<void> {
   }, POLL_INTERVAL_MS);
 
   // Cleanup loop
-  const cleanupTimer = setInterval(() => {
+  cleanupTimer = setInterval(() => {
     const deleted = cleanupOldPositions(db);
     if (deleted > 0) {
       console.log(`[opensky] Cleaned up ${deleted} positions older than 24h`);
     }
   }, CLEANUP_INTERVAL_MS);
-
-  // Graceful shutdown
-  function shutdown(): void {
-    console.log("[opensky] Shutting down...");
-    clearInterval(pollTimer);
-    clearInterval(cleanupTimer);
-    closeDb();
-    process.exit(0);
-  }
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
 
   // Run first cycle immediately
   const data = await fetchStates();
@@ -302,9 +299,29 @@ async function main(): Promise<void> {
   } else {
     console.warn("[opensky] Initial fetch failed — will retry on next cycle");
   }
+
+  // Return stop function
+  return () => {
+    console.log("[opensky] Stopping worker...");
+    if (pollTimer) clearInterval(pollTimer);
+    if (cleanupTimer) clearInterval(cleanupTimer);
+    pollTimer = null;
+    cleanupTimer = null;
+  };
 }
 
-main().catch((err) => {
-  console.error("[opensky] Fatal:", err);
-  process.exit(1);
-});
+// ── Standalone CLI entry point ────────────────────────────────────────────
+// Only runs when executed directly (not when imported by server)
+
+const isMainModule = process.argv[1]?.includes("opensky-worker");
+if (isMainModule) {
+  startWorker()
+    .then((stop) => {
+      process.on("SIGINT", () => { stop(); closeDb(); process.exit(0); });
+      process.on("SIGTERM", () => { stop(); closeDb(); process.exit(0); });
+    })
+    .catch((err) => {
+      console.error("[opensky] Fatal:", err);
+      process.exit(1);
+    });
+}
