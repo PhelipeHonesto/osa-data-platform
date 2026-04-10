@@ -238,14 +238,19 @@ function processFile(filePath: string, db: Database.Database, stats: IngestStats
 // ── Leg materialization ──────────────────────────────────────────────────────
 
 function materializeLegs(db: Database.Database): number {
-  const aircraft = db.prepare(
-    "SELECT DISTINCT icao_hex, tail_number FROM adsb_positions WHERE tail_number IS NOT NULL",
-  ).all() as { icao_hex: string; tail_number: string }[];
+  const aircraft = db.prepare(`
+    SELECT DISTINCT p.icao_hex, p.tail_number,
+      a.model as aircraft_type, a.aircraft_class, a.certificate_holder as operator_name
+    FROM adsb_positions p
+    LEFT JOIN faa_aircraft a ON a.icao_hex = p.icao_hex
+    WHERE p.tail_number IS NOT NULL
+  `).all() as { icao_hex: string; tail_number: string; aircraft_type: string | null; aircraft_class: string | null; operator_name: string | null }[];
 
   const insertLeg = db.prepare(`
     INSERT INTO adsb_completed_legs
-    (icao_hex, tail_number, origin_icao, destination_icao, departure_time, arrival_time, flight_time_min, distance_nm)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    (icao_hex, tail_number, operator_name, aircraft_type, aircraft_class,
+     origin_icao, destination_icao, departure_time, arrival_time, flight_time_min, distance_nm)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   let legCount = 0;
@@ -277,7 +282,7 @@ function materializeLegs(db: Database.Database): number {
           const depTime = new Date(legStart.ts * 1000).toISOString();
           const arrTime = new Date(pos.timestamp * 1000).toISOString();
 
-          insertLeg.run(ac.icao_hex, ac.tail_number, originIcao, destIcao, depTime, arrTime, flightTimeMin, Math.round(distNm));
+          insertLeg.run(ac.icao_hex, ac.tail_number, ac.operator_name, ac.aircraft_type, ac.aircraft_class, originIcao, destIcao, depTime, arrTime, flightTimeMin, Math.round(distNm));
           legCount++;
         }
         legStart = null;

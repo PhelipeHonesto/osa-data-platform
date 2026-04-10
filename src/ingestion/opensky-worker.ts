@@ -152,10 +152,14 @@ function ingestCycle(db: Database.Database, icaoToTail: Map<string, string>, dat
 
   const upsertState = db.prepare(
     `INSERT INTO adsb_aircraft_state
-       (icao_hex, tail_number, state, latitude, longitude, nearest_airport, last_seen, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+       (icao_hex, tail_number, aircraft_type, aircraft_class, operator_name,
+        state, latitude, longitude, nearest_airport, last_seen, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
      ON CONFLICT(icao_hex) DO UPDATE SET
        tail_number = COALESCE(excluded.tail_number, adsb_aircraft_state.tail_number),
+       aircraft_type = COALESCE(excluded.aircraft_type, adsb_aircraft_state.aircraft_type),
+       aircraft_class = COALESCE(excluded.aircraft_class, adsb_aircraft_state.aircraft_class),
+       operator_name = COALESCE(excluded.operator_name, adsb_aircraft_state.operator_name),
        state = excluded.state,
        latitude = excluded.latitude,
        longitude = excluded.longitude,
@@ -173,6 +177,12 @@ function ingestCycle(db: Database.Database, icaoToTail: Map<string, string>, dat
        END,
        updated_at = datetime('now')`,
   );
+
+  // Pre-load faa_aircraft data for class/type/operator enrichment
+  const faaLookup = new Map<string, { type: string | null; cls: string | null; op: string | null }>();
+  const faaRows = db.prepare("SELECT icao_hex, model, aircraft_class, certificate_holder FROM faa_aircraft WHERE icao_hex IS NOT NULL")
+    .all() as { icao_hex: string; model: string | null; aircraft_class: string | null; certificate_holder: string | null }[];
+  for (const f of faaRows) faaLookup.set(f.icao_hex.toLowerCase(), { type: f.model, cls: f.aircraft_class, op: f.certificate_holder });
 
   const rows: PositionRow[] = [];
 
@@ -226,9 +236,10 @@ function ingestCycle(db: Database.Database, icaoToTail: Map<string, string>, dat
         r.on_ground, r.nearest_airport, r.timestamp,
       );
       const aircraftState = r.on_ground ? "idle" : "airborne";
+      const faa = faaLookup.get(r.icao_hex);
       upsertState.run(
-        r.icao_hex, r.tail_number, aircraftState,
-        r.latitude, r.longitude, r.nearest_airport,
+        r.icao_hex, r.tail_number, faa?.type ?? null, faa?.cls ?? null, faa?.op ?? null,
+        aircraftState, r.latitude, r.longitude, r.nearest_airport,
       );
     }
   });
