@@ -19,7 +19,7 @@ import { haversine } from "../utils/haversine.js";
 
 // ── ICAO Type Code → Aircraft Class mapping ─────────────────────────────────
 
-const ICAO_TYPE_CLASS: Record<string, string> = {
+export const ICAO_TYPE_CLASS: Record<string, string> = {
   // Heavy / Ultra-long
   GLF5: "heavy", GLF6: "heavy", G650: "heavy", GLEX: "heavy",
   GL5T: "heavy", GL7T: "heavy", CL60: "heavy", CL61: "heavy",
@@ -49,7 +49,7 @@ const ICAO_TYPE_CLASS: Record<string, string> = {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-interface TraceFile {
+export interface TraceFile {
   icao: string;
   r?: string;         // tail number
   t?: string;         // type code
@@ -72,7 +72,7 @@ interface DownsampledPoint {
   vertRate: number | null;
 }
 
-interface IngestStats {
+export interface IngestStats {
   processed: number;
   skippedNonUS: number;
   usAircraft: number;
@@ -91,7 +91,7 @@ interface AirportCandidate {
 
 // ── Nearest airport resolver (same pattern as opensky-worker.ts) ─────────────
 
-function findNearestAirport(
+export function findNearestAirport(
   db: Database.Database,
   lat: number,
   lon: number,
@@ -124,7 +124,7 @@ function findNearestAirport(
 
 // ── Downsampling ─────────────────────────────────────────────────────────────
 
-function downsampleTrace(data: TraceFile): DownsampledPoint[] {
+export function downsampleTrace(data: TraceFile): DownsampledPoint[] {
   const result: DownsampledPoint[] = [];
   let lastKeptTime = -Infinity;
   let wasOnGround = false;
@@ -163,7 +163,7 @@ function downsampleTrace(data: TraceFile): DownsampledPoint[] {
 
 // ── Batch insert positions ───────────────────────────────────────────────────
 
-function insertPositions(
+export function insertPositions(
   db: Database.Database,
   icaoHex: string,
   tailNumber: string,
@@ -188,7 +188,7 @@ function insertPositions(
 
 // ── Upsert aircraft ──────────────────────────────────────────────────────────
 
-function upsertAircraft(db: Database.Database, data: TraceFile, aircraftClass: string | null): void {
+export function upsertAircraft(db: Database.Database, data: TraceFile, aircraftClass: string | null): void {
   db.prepare(`
     INSERT OR REPLACE INTO faa_aircraft
     (tail_number, icao_hex, model, common_name, aircraft_class,
@@ -203,7 +203,7 @@ function upsertAircraft(db: Database.Database, data: TraceFile, aircraftClass: s
 
 // ── Process a single trace file ──────────────────────────────────────────────
 
-function processFile(filePath: string, db: Database.Database, stats: IngestStats): void {
+export function processFile(filePath: string, db: Database.Database, stats: IngestStats): void {
   // 1. Read and decompress
   const raw = readFileSync(filePath);
   const json = gunzipSync(raw).toString("utf-8");
@@ -454,7 +454,11 @@ async function main() {
   closeDb();
 }
 
-main().catch((err) => {
-  console.error("[adsblol] Fatal:", err);
-  process.exit(1);
-});
+// Only run main when invoked directly (not when imported)
+const isDirectRun = process.argv[1]?.endsWith("adsblol-ingest.ts") || process.argv[1]?.endsWith("adsblol-ingest.js");
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error("[adsblol] Fatal:", err);
+    process.exit(1);
+  });
+}
