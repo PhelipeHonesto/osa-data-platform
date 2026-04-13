@@ -198,12 +198,17 @@ function findTraceFiles(extractDir: string, charterHexes: Set<string>): string[]
 }
 
 // ── Day-scoped leg materialization ──────────────────────────────────────────
+// Processes hexes in chunks of 1000 with separate transactions to limit peak memory.
+// Each chunk's position data gets GC'd before the next chunk starts.
+
+const MAT_CHUNK_SIZE = 1000;
 
 function materializeLegsForDay(
   db: Database.Database,
   processedHexes: Set<string>,
   sinceTimestamp: number,
   untilTimestamp: number,
+  date: string,
 ): { totalLegs: number; charterLegs: number } {
   const insertLeg = db.prepare(`
     INSERT INTO adsb_completed_legs
@@ -212,56 +217,78 @@ function materializeLegsForDay(
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
+  const hexArray = [...processedHexes];
   let totalLegs = 0;
   let charterLegs = 0;
 
-  for (const hex of processedHexes) {
-    const ac = db
-      .prepare(
-        `SELECT a.tail_number, a.model as aircraft_type, a.aircraft_class, a.certificate_holder as operator_name
-         FROM faa_aircraft a WHERE a.icao_hex = ?`,
-      )
-      .get(hex) as { tail_number: string | null; aircraft_type: string | null; aircraft_class: string | null; operator_name: string | null } | undefined;
+  for (let ci = 0; ci < hexArray.length; ci += MAT_CHUNK_SIZE) {
+    const chunk = hexArray.slice(ci, ci + MAT_CHUNK_SIZE);
 
-    const positions = db
-      .prepare(
-        `SELECT latitude, longitude, altitude_ft, on_ground, timestamp
-         FROM adsb_positions WHERE icao_hex = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp`,
-      )
-      .all(hex, sinceTimestamp, untilTimestamp) as {
-        latitude: number; longitude: number; altitude_ft: number | null;
-        on_ground: number; timestamp: number;
-      }[];
+    const runChunk = db.transaction(() => {
+      let chunkLegs = 0;
+      let chunkCharter = 0;
 
-    let legStart: { lat: number; lon: number; ts: number } | null = null;
-    let wasGround = true;
+      for (const hex of chunk) {
+        const ac = db
+          .prepare(
+            `SELECT a.tail_number, a.model as aircraft_type, a.aircraft_class, a.certificate_holder as operator_name
+             FROM faa_aircraft a WHERE a.icao_hex = ?`,
+          )
+          .get(hex) as { tail_number: string | null; aircraft_type: string | null; aircraft_class: string | null; operator_name: string | null } | undefined;
 
-    for (const pos of positions) {
-      const isGround = pos.on_ground === 1;
+        const positions = db
+          .prepare(
+            `SELECT latitude, longitude, altitude_ft, on_ground, timestamp
+             FROM adsb_positions WHERE icao_hex = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp`,
+          )
+          .all(hex, sinceTimestamp, untilTimestamp) as {
+            latitude: number; longitude: number; altitude_ft: number | null;
+            on_ground: number; timestamp: number;
+          }[];
 
-      if (wasGround && !isGround && !legStart) {
-        legStart = { lat: pos.latitude, lon: pos.longitude, ts: pos.timestamp };
-      } else if (!wasGround && isGround && legStart) {
-        const flightTimeMin = Math.round((pos.timestamp - legStart.ts) / 60);
+        let legStart: { lat: number; lon: number; ts: number } | null = null;
+        let wasGround = true;
 
-        if (flightTimeMin >= 5) {
-          const distNm = haversine(legStart.lat, legStart.lon, pos.latitude, pos.longitude);
-          const originIcao = findNearestAirport(db, legStart.lat, legStart.lon) ?? null;
-          const destIcao = findNearestAirport(db, pos.latitude, pos.longitude) ?? null;
-          const depTime = new Date(legStart.ts * 1000).toISOString();
-          const arrTime = new Date(pos.timestamp * 1000).toISOString();
+        for (const pos of positions) {
+          const isGround = pos.on_ground === 1;
 
-          insertLeg.run(
-            hex, ac?.tail_number ?? null, ac?.operator_name ?? null,
-            ac?.aircraft_type ?? null, ac?.aircraft_class ?? null,
-            originIcao, destIcao, depTime, arrTime, flightTimeMin, Math.round(distNm),
-          );
-          totalLegs++;
-          if (ac?.aircraft_class) charterLegs++;
+          if (wasGround && !isGround && !legStart) {
+            legStart = { lat: pos.latitude, lon: pos.longitude, ts: pos.timestamp };
+          } else if (!wasGround && isGround && legStart) {
+            const flightTimeMin = Math.round((pos.timestamp - legStart.ts) / 60);
+
+            if (flightTimeMin >= 5) {
+              const distNm = haversine(legStart.lat, legStart.lon, pos.latitude, pos.longitude);
+              const originIcao = findNearestAirport(db, legStart.lat, legStart.lon) ?? null;
+              const destIcao = findNearestAirport(db, pos.latitude, pos.longitude) ?? null;
+              const depTime = new Date(legStart.ts * 1000).toISOString();
+              const arrTime = new Date(pos.timestamp * 1000).toISOString();
+
+              insertLeg.run(
+                hex, ac?.tail_number ?? null, ac?.operator_name ?? null,
+                ac?.aircraft_type ?? null, ac?.aircraft_class ?? null,
+                originIcao, destIcao, depTime, arrTime, flightTimeMin, Math.round(distNm),
+              );
+              chunkLegs++;
+              if (ac?.aircraft_class) chunkCharter++;
+            }
+            legStart = null;
+          }
+          wasGround = isGround;
         }
-        legStart = null;
       }
-      wasGround = isGround;
+
+      return { chunkLegs, chunkCharter };
+    });
+
+    const { chunkLegs, chunkCharter } = runChunk();
+    totalLegs += chunkLegs;
+    charterLegs += chunkCharter;
+
+    if (ci + MAT_CHUNK_SIZE < hexArray.length) {
+      console.log(
+        `[backfill] ${date}: Materializing ${Math.min(ci + MAT_CHUNK_SIZE, hexArray.length)}/${hexArray.length} aircraft (${totalLegs} legs so far)`,
+      );
     }
   }
 
@@ -372,10 +399,9 @@ function processDay(
     rmSync(extractDir, { recursive: true, force: true });
 
     // 6. Materialize legs from this day's positions (scoped by day timestamp range)
-    console.log(`[backfill] ${date}: Materializing legs...`);
-    const { totalLegs, charterLegs: charterLegCount } = db.transaction(() =>
-      materializeLegsForDay(db, processedHexes, dayStartTs, dayEndTs),
-    )();
+    console.log(`[backfill] ${date}: Materializing legs (${processedHexes.size} aircraft, ${MAT_CHUNK_SIZE}/chunk)...`);
+    const { totalLegs, charterLegs: charterLegCount } =
+      materializeLegsForDay(db, processedHexes, dayStartTs, dayEndTs, date);
 
     // 7. Clean up positions for this day to save disk
     db.prepare("DELETE FROM adsb_positions WHERE timestamp >= ? AND timestamp < ?").run(dayStartTs, dayEndTs);
