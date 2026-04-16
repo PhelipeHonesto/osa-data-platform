@@ -28,15 +28,51 @@ try {
   }
 } catch { /* no .env */ }
 
+// ── Bulk upsert helper ──────────────────────────────────────────────────────
+// Collapses N-per-row network round-trips into ceil(N/500) multi-row INSERTs.
+
+async function bulkUpsert(
+  db: DbBridge,
+  table: string,
+  columns: readonly string[],
+  rows: readonly unknown[][],
+  conflictCols: readonly string[],
+  batchSize = 500,
+): Promise<void> {
+  if (rows.length === 0) return;
+  const colList = columns.join(", ");
+  const conflictList = conflictCols.join(", ");
+  const updateSet = columns
+    .filter((c) => !conflictCols.includes(c))
+    .map((c) => `${c} = EXCLUDED.${c}`)
+    .join(", ");
+
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const slice = rows.slice(i, i + batchSize);
+    const placeholders: string[] = [];
+    const values: unknown[] = [];
+    let p = 1;
+    for (const row of slice) {
+      const rowPh = row.map(() => `$${p++}`).join(",");
+      placeholders.push(`(${rowPh})`);
+      values.push(...row);
+    }
+    const sql =
+      `INSERT INTO ${table} (${colList}) VALUES ${placeholders.join(",")} ` +
+      `ON CONFLICT (${conflictList}) DO UPDATE SET ${updateSet}`;
+    await db.prepare(sql).run(...values);
+  }
+}
+
 // ── Operator Market Share ───────────────────────────────────────────────────
 
 export async function buildOperatorMarketShare(db: DbBridge, month: string): Promise<number> {
   const monthStart = `${month}-01`;
-  const monthEnd = `${month}-31 23:59:59`;
+  const monthEnd = nextMonthStart(month);  // exclusive — text-safe across space/T separator formats
 
   const totalRow = await db.prepare(`
     SELECT COUNT(*) as total FROM adsb_completed_legs
-    WHERE departure_time >= ? AND departure_time <= ?
+    WHERE departure_time >= ? AND departure_time < ?
   `).get(monthStart, monthEnd) as { total: number };
   const totalLegs = totalRow.total || 1;
 
@@ -45,7 +81,7 @@ export async function buildOperatorMarketShare(db: DbBridge, month: string): Pro
       ROUND(COALESCE(SUM(flight_time_min), 0) / 60.0, 1) as total_flight_hours,
       ROUND(COALESCE(AVG(flight_time_min), 0), 1) as avg_flight_time_min
     FROM adsb_completed_legs
-    WHERE departure_time >= ? AND departure_time <= ?
+    WHERE departure_time >= ? AND departure_time < ?
       AND operator_name IS NOT NULL AND operator_name != ''
     GROUP BY operator_name ORDER BY total_legs DESC
   `).all(monthStart, monthEnd) as Array<{
@@ -53,40 +89,57 @@ export async function buildOperatorMarketShare(db: DbBridge, month: string): Pro
     total_flight_hours: number; avg_flight_time_min: number;
   }>;
 
-  // Delete existing month data (idempotent rebuild)
-  await db.prepare("DELETE FROM operator_market_share WHERE month = ?").run(month);
-
-  const insert = db.prepare(`
-    INSERT INTO operator_market_share
-    (month, operator_name, total_legs, total_flight_hours, market_share_pct,
-     avg_flight_time_min, top_route, aircraft_classes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  for (const op of operators) {
-    const topRoute = await db.prepare(`
-      SELECT origin_icao || '-' || destination_icao as route, COUNT(*) as cnt
+  // Batch: top route per operator (DISTINCT ON + window)
+  const topRouteRows = await db.prepare(`
+    SELECT DISTINCT ON (operator_name) operator_name,
+           origin_icao || '-' || destination_icao AS route
+    FROM (
+      SELECT operator_name, origin_icao, destination_icao, COUNT(*) AS n
       FROM adsb_completed_legs
-      WHERE operator_name = ? AND departure_time >= ? AND departure_time <= ?
+      WHERE departure_time >= ? AND departure_time < ?
+        AND operator_name IS NOT NULL AND operator_name != ''
         AND origin_icao IS NOT NULL AND destination_icao IS NOT NULL
-      GROUP BY route ORDER BY cnt DESC LIMIT 1
-    `).get(op.operator_name, monthStart, monthEnd) as { route: string } | undefined;
+      GROUP BY operator_name, origin_icao, destination_icao
+    ) t
+    ORDER BY operator_name, n DESC
+  `).all(monthStart, monthEnd) as Array<{ operator_name: string; route: string }>;
+  const topRouteMap = new Map<string, string>();
+  for (const r of topRouteRows) topRouteMap.set(r.operator_name, r.route);
 
-    const classes = await db.prepare(`
-      SELECT DISTINCT aircraft_class FROM adsb_completed_legs
-      WHERE operator_name = ? AND departure_time >= ? AND departure_time <= ?
-        AND aircraft_class IS NOT NULL
-    `).all(op.operator_name, monthStart, monthEnd) as Array<{ aircraft_class: string }>;
+  // Batch: distinct aircraft classes per operator
+  const classRows = await db.prepare(`
+    SELECT operator_name, aircraft_class
+    FROM adsb_completed_legs
+    WHERE departure_time >= ? AND departure_time < ?
+      AND operator_name IS NOT NULL AND operator_name != ''
+      AND aircraft_class IS NOT NULL
+    GROUP BY operator_name, aircraft_class
+  `).all(monthStart, monthEnd) as Array<{ operator_name: string; aircraft_class: string }>;
+  const classesMap = new Map<string, string[]>();
+  for (const r of classRows) {
+    const arr = classesMap.get(r.operator_name) ?? [];
+    arr.push(r.aircraft_class);
+    classesMap.set(r.operator_name, arr);
+  }
 
+  const rows: unknown[][] = [];
+  for (const op of operators) {
     const sharePct = Math.round((op.total_legs / totalLegs) * 10000) / 100;
-
-    await insert.run(
+    rows.push([
       month, op.operator_name, op.total_legs, op.total_flight_hours,
       sharePct, op.avg_flight_time_min,
-      topRoute?.route ?? null,
-      JSON.stringify(classes.map((c) => c.aircraft_class)),
-    );
+      topRouteMap.get(op.operator_name) ?? null,
+      JSON.stringify(classesMap.get(op.operator_name) ?? []),
+    ]);
   }
+
+  await bulkUpsert(
+    db, "operator_market_share",
+    ["month", "operator_name", "total_legs", "total_flight_hours",
+     "market_share_pct", "avg_flight_time_min", "top_route", "aircraft_classes"],
+    rows,
+    ["month", "operator_name"],
+  );
 
   console.log(`[analytics] operator_market_share ${month}: ${operators.length} operators`);
   return operators.length;
@@ -96,7 +149,7 @@ export async function buildOperatorMarketShare(db: DbBridge, month: string): Pro
 
 export async function buildAircraftUtilization(db: DbBridge, month: string): Promise<number> {
   const monthStart = `${month}-01`;
-  const monthEnd = `${month}-31 23:59:59`;
+  const monthEnd = nextMonthStart(month);  // exclusive — text-safe across space/T separator formats
 
   const aircraft = await db.prepare(`
     SELECT tail_number, MAX(icao_hex) as icao_hex,
@@ -106,7 +159,7 @@ export async function buildAircraftUtilization(db: DbBridge, month: string): Pro
       ROUND(COALESCE(SUM(distance_nm), 0), 1) as total_distance_nm,
       COUNT(DISTINCT DATE(departure_time)) as days_active
     FROM adsb_completed_legs
-    WHERE departure_time >= ? AND departure_time <= ?
+    WHERE departure_time >= ? AND departure_time < ?
       AND tail_number IS NOT NULL AND tail_number != ''
     GROUP BY tail_number ORDER BY total_legs DESC
   `).all(monthStart, monthEnd) as Array<{
@@ -115,34 +168,42 @@ export async function buildAircraftUtilization(db: DbBridge, month: string): Pro
     total_distance_nm: number; days_active: number;
   }>;
 
-  await db.prepare("DELETE FROM aircraft_utilization WHERE month = ?").run(month);
+  // Batch: home airport (most-frequent origin) per tail_number
+  const homeRows = await db.prepare(`
+    SELECT DISTINCT ON (tail_number) tail_number, origin_icao
+    FROM (
+      SELECT tail_number, origin_icao, COUNT(*) AS n
+      FROM adsb_completed_legs
+      WHERE departure_time >= ? AND departure_time < ?
+        AND tail_number IS NOT NULL AND tail_number != ''
+        AND origin_icao IS NOT NULL
+      GROUP BY tail_number, origin_icao
+    ) t
+    ORDER BY tail_number, n DESC
+  `).all(monthStart, monthEnd) as Array<{ tail_number: string; origin_icao: string }>;
+  const homeMap = new Map<string, string>();
+  for (const r of homeRows) homeMap.set(r.tail_number, r.origin_icao);
 
-  const insert = db.prepare(`
-    INSERT INTO aircraft_utilization
-    (month, tail_number, icao_hex, operator_name, aircraft_class,
-     total_legs, total_flight_hours, total_distance_nm, days_active,
-     avg_daily_hours, home_airport)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
+  const rows: unknown[][] = [];
   for (const ac of aircraft) {
     const avgDaily = ac.days_active > 0
       ? Math.round((ac.total_flight_hours / ac.days_active) * 100) / 100
       : 0;
-
-    const home = await db.prepare(`
-      SELECT origin_icao, COUNT(*) as cnt FROM adsb_completed_legs
-      WHERE tail_number = ? AND departure_time >= ? AND departure_time <= ?
-        AND origin_icao IS NOT NULL
-      GROUP BY origin_icao ORDER BY cnt DESC LIMIT 1
-    `).get(ac.tail_number, monthStart, monthEnd) as { origin_icao: string } | undefined;
-
-    await insert.run(
+    rows.push([
       month, ac.tail_number, ac.icao_hex, ac.operator_name, ac.aircraft_class,
       ac.total_legs, ac.total_flight_hours, ac.total_distance_nm,
-      ac.days_active, avgDaily, home?.origin_icao ?? null,
-    );
+      ac.days_active, avgDaily, homeMap.get(ac.tail_number) ?? null,
+    ]);
   }
+
+  await bulkUpsert(
+    db, "aircraft_utilization",
+    ["month", "tail_number", "icao_hex", "operator_name", "aircraft_class",
+     "total_legs", "total_flight_hours", "total_distance_nm", "days_active",
+     "avg_daily_hours", "home_airport"],
+    rows,
+    ["month", "tail_number"],
+  );
 
   console.log(`[analytics] aircraft_utilization ${month}: ${aircraft.length} aircraft`);
   return aircraft.length;
@@ -151,8 +212,8 @@ export async function buildAircraftUtilization(db: DbBridge, month: string): Pro
 // ── Airport Activity ────────────────────────────────────────────────────────
 
 export async function buildAirportActivity(db: DbBridge, date: string): Promise<number> {
-  const dateStart = `${date} 00:00:00`;
-  const dateEnd = `${date} 23:59:59`;
+  const dateStart = date;
+  const dateEnd = nextDayStart(date);  // exclusive — text-safe across space/T separator formats
 
   const departures = await db.prepare(`
     SELECT origin_icao as airport, CAST(strftime('%H', departure_time) AS INTEGER) as hour,
@@ -160,7 +221,7 @@ export async function buildAirportActivity(db: DbBridge, date: string): Promise<
            COUNT(DISTINCT COALESCE(tail_number, icao_hex)) as unique_ac,
            SUM(CASE WHEN aircraft_class IS NOT NULL THEN 1 ELSE 0 END) as charter
     FROM adsb_completed_legs
-    WHERE departure_time >= ? AND departure_time <= ? AND origin_icao IS NOT NULL
+    WHERE departure_time >= ? AND departure_time < ? AND origin_icao IS NOT NULL
     GROUP BY origin_icao, hour
   `).all(dateStart, dateEnd) as Array<{
     airport: string; hour: number; cnt: number; unique_ac: number; charter: number;
@@ -172,7 +233,7 @@ export async function buildAirportActivity(db: DbBridge, date: string): Promise<
            COUNT(DISTINCT COALESCE(tail_number, icao_hex)) as unique_ac,
            SUM(CASE WHEN aircraft_class IS NOT NULL THEN 1 ELSE 0 END) as charter
     FROM adsb_completed_legs
-    WHERE arrival_time >= ? AND arrival_time <= ? AND destination_icao IS NOT NULL
+    WHERE arrival_time >= ? AND arrival_time < ? AND destination_icao IS NOT NULL
     GROUP BY destination_icao, hour
   `).all(dateStart, dateEnd) as Array<{
     airport: string; hour: number; cnt: number; unique_ac: number; charter: number;
@@ -194,20 +255,20 @@ export async function buildAirportActivity(db: DbBridge, date: string): Promise<
     map.set(k, existing);
   }
 
-  await db.prepare("DELETE FROM airport_activity WHERE date = ?").run(date);
-
-  const insert = db.prepare(`
-    INSERT INTO airport_activity
-    (date, airport_icao, hour, departures, arrivals, total_movements,
-     unique_aircraft, charter_movements)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
+  const rows: unknown[][] = [];
   for (const [k, v] of map) {
     const [airport, hourStr] = k.split("|") as [string, string];
     const hour = parseInt(hourStr, 10);
-    await insert.run(date, airport, hour, v.dep, v.arr, v.dep + v.arr, v.unique, v.charter);
+    rows.push([date, airport, hour, v.dep, v.arr, v.dep + v.arr, v.unique, v.charter]);
   }
+
+  await bulkUpsert(
+    db, "airport_activity",
+    ["date", "airport_icao", "hour", "departures", "arrivals",
+     "total_movements", "unique_aircraft", "charter_movements"],
+    rows,
+    ["date", "airport_icao", "hour"],
+  );
 
   console.log(`[analytics] airport_activity ${date}: ${map.size} airport-hours`);
   return map.size;
@@ -217,17 +278,17 @@ export async function buildAirportActivity(db: DbBridge, date: string): Promise<
 
 export async function buildRouteTrends(db: DbBridge, month: string): Promise<number> {
   const monthStart = `${month}-01`;
-  const monthEnd = `${month}-31 23:59:59`;
+  const monthEnd = nextMonthStart(month);  // exclusive — text-safe across space/T separator formats
   const [yearStr, monthNum] = month.split("-") as [string, string];
   const prevYear = `${parseInt(yearStr, 10) - 1}-${monthNum}`;
   const prevStart = `${prevYear}-01`;
-  const prevEnd = `${prevYear}-31 23:59:59`;
+  const prevEnd = nextMonthStart(prevYear);  // exclusive
 
   const routes = await db.prepare(`
     SELECT origin_icao, destination_icao, COUNT(*) as total_flights,
       ROUND(COALESCE(AVG(flight_time_min), 0), 1) as avg_flight_time_min
     FROM adsb_completed_legs
-    WHERE departure_time >= ? AND departure_time <= ?
+    WHERE departure_time >= ? AND departure_time < ?
       AND origin_icao IS NOT NULL AND destination_icao IS NOT NULL
     GROUP BY origin_icao, destination_icao ORDER BY total_flights DESC
   `).all(monthStart, monthEnd) as Array<{
@@ -235,26 +296,42 @@ export async function buildRouteTrends(db: DbBridge, month: string): Promise<num
     total_flights: number; avg_flight_time_min: number;
   }>;
 
-  await db.prepare("DELETE FROM route_trends WHERE month = ?").run(month);
+  // Batch: class breakdown per route (ordered by cnt so first = dominant)
+  const classRows = await db.prepare(`
+    SELECT origin_icao, destination_icao, aircraft_class, COUNT(*) AS cnt
+    FROM adsb_completed_legs
+    WHERE departure_time >= ? AND departure_time < ?
+      AND origin_icao IS NOT NULL AND destination_icao IS NOT NULL
+      AND aircraft_class IS NOT NULL
+    GROUP BY origin_icao, destination_icao, aircraft_class
+    ORDER BY origin_icao, destination_icao, cnt DESC
+  `).all(monthStart, monthEnd) as Array<{
+    origin_icao: string; destination_icao: string; aircraft_class: string; cnt: number;
+  }>;
+  const routeKey = (o: string, d: string) => `${o}|${d}`;
+  const classesByRoute = new Map<string, Array<{ aircraft_class: string; cnt: number }>>();
+  for (const r of classRows) {
+    const k = routeKey(r.origin_icao, r.destination_icao);
+    const arr = classesByRoute.get(k) ?? [];
+    arr.push({ aircraft_class: r.aircraft_class, cnt: r.cnt });
+    classesByRoute.set(k, arr);
+  }
 
-  const insert = db.prepare(`
-    INSERT INTO route_trends
-    (month, origin_icao, destination_icao, total_flights, avg_flight_time_min,
-     dominant_class, class_breakdown, yoy_change_pct)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+  // Batch: previous-year counts per route for YoY
+  const prevRows = await db.prepare(`
+    SELECT origin_icao, destination_icao, COUNT(*) AS cnt
+    FROM adsb_completed_legs
+    WHERE departure_time >= ? AND departure_time < ?
+      AND origin_icao IS NOT NULL AND destination_icao IS NOT NULL
+    GROUP BY origin_icao, destination_icao
+  `).all(prevStart, prevEnd) as Array<{ origin_icao: string; destination_icao: string; cnt: number }>;
+  const prevMap = new Map<string, number>();
+  for (const r of prevRows) prevMap.set(routeKey(r.origin_icao, r.destination_icao), r.cnt);
 
+  const rows: unknown[][] = [];
   for (const route of routes) {
-    const classes = await db.prepare(`
-      SELECT aircraft_class, COUNT(*) as cnt FROM adsb_completed_legs
-      WHERE origin_icao = ? AND destination_icao = ?
-        AND departure_time >= ? AND departure_time <= ?
-        AND aircraft_class IS NOT NULL
-      GROUP BY aircraft_class ORDER BY cnt DESC
-    `).all(route.origin_icao, route.destination_icao, monthStart, monthEnd) as Array<{
-      aircraft_class: string; cnt: number;
-    }>;
-
+    const k = routeKey(route.origin_icao, route.destination_icao);
+    const classes = classesByRoute.get(k) ?? [];
     const breakdown: Record<string, number> = {};
     let dominantClass: string | null = null;
     for (const c of classes) {
@@ -262,22 +339,25 @@ export async function buildRouteTrends(db: DbBridge, month: string): Promise<num
       if (!dominantClass) dominantClass = c.aircraft_class;
     }
 
-    const prevCount = await db.prepare(`
-      SELECT COUNT(*) as cnt FROM adsb_completed_legs
-      WHERE origin_icao = ? AND destination_icao = ?
-        AND departure_time >= ? AND departure_time <= ?
-    `).get(route.origin_icao, route.destination_icao, prevStart, prevEnd) as { cnt: number };
-
-    const yoyPct = prevCount.cnt > 0
-      ? Math.round(((route.total_flights - prevCount.cnt) / prevCount.cnt) * 1000) / 10
+    const prevCnt = prevMap.get(k) ?? 0;
+    const yoyPct = prevCnt > 0
+      ? Math.round(((route.total_flights - prevCnt) / prevCnt) * 1000) / 10
       : null;
 
-    await insert.run(
+    rows.push([
       month, route.origin_icao, route.destination_icao,
       route.total_flights, route.avg_flight_time_min,
       dominantClass, JSON.stringify(breakdown), yoyPct,
-    );
+    ]);
   }
+
+  await bulkUpsert(
+    db, "route_trends",
+    ["month", "origin_icao", "destination_icao", "total_flights",
+     "avg_flight_time_min", "dominant_class", "class_breakdown", "yoy_change_pct"],
+    rows,
+    ["month", "origin_icao", "destination_icao"],
+  );
 
   console.log(`[analytics] route_trends ${month}: ${routes.length} routes`);
   return routes.length;
@@ -292,70 +372,101 @@ export async function buildFleetSnapshot(db: DbBridge, date: string): Promise<nu
   const sevenDaysAgo = new Date(new Date(date + "T00:00:00Z").getTime() - 7 * 86400_000)
     .toISOString().slice(0, 10);
 
-  await db.prepare("DELETE FROM fleet_snapshot WHERE date = ?").run(date);
+  // Batch: per-class counts across tables (one aggregate query each)
+  const regRows = await db.prepare(
+    `SELECT aircraft_class, COUNT(*) AS cnt FROM faa_aircraft
+     WHERE aircraft_class IS NOT NULL GROUP BY aircraft_class`,
+  ).all() as Array<{ aircraft_class: string; cnt: number }>;
+  const regMap = new Map(regRows.map((r) => [r.aircraft_class, Number(r.cnt)]));
 
-  const insert = db.prepare(`
-    INSERT INTO fleet_snapshot
-    (date, aircraft_class, total_registered, total_tracked, total_airborne,
-     total_idle, avg_utilization_hours, new_registrations, deregistrations)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  for (const cls of classes) {
-    const registered = await db.prepare(
-      `SELECT COUNT(*) as cnt FROM faa_aircraft WHERE aircraft_class = ?`,
-    ).get(cls) as { cnt: number };
-
-    const tracked = await db.prepare(
-      `SELECT COUNT(*) as cnt FROM adsb_aircraft_state WHERE aircraft_class = ?`,
-    ).get(cls) as { cnt: number };
-
-    const airborne = await db.prepare(
-      `SELECT COUNT(*) as cnt FROM adsb_aircraft_state WHERE aircraft_class = ? AND state = 'airborne'`,
-    ).get(cls) as { cnt: number };
-
-    const idle = await db.prepare(
-      `SELECT COUNT(*) as cnt FROM adsb_aircraft_state
-       WHERE aircraft_class = ? AND (state = 'idle' OR state = 'idle_transient')`,
-    ).get(cls) as { cnt: number };
-
-    const util = await db.prepare(`
-      SELECT ROUND(AVG(hours), 2) as avg_hours FROM (
-        SELECT tail_number, SUM(flight_time_min) / 60.0 as hours
-        FROM adsb_completed_legs WHERE aircraft_class = ? AND departure_time >= ?
-        GROUP BY tail_number
-      )
-    `).get(cls, thirtyDaysAgo) as { avg_hours: number | null };
-
-    // Registry changes — may not have data in PG, handle gracefully
-    let newRegs = 0, deregs = 0;
-    try {
-      const nr = await db.prepare(`
-        SELECT COUNT(*) as cnt FROM faa_registry_changes
-        WHERE change_type = 'new' AND detected_at >= ?
-          AND tail_number IN (SELECT tail_number FROM faa_aircraft WHERE aircraft_class = ?)
-      `).get(sevenDaysAgo, cls) as { cnt: number };
-      newRegs = nr.cnt;
-
-      const dr = await db.prepare(`
-        SELECT COUNT(*) as cnt FROM faa_registry_changes
-        WHERE change_type = 'deregistered' AND detected_at >= ?
-          AND tail_number IN (SELECT tail_number FROM faa_aircraft WHERE aircraft_class = ?)
-      `).get(sevenDaysAgo, cls) as { cnt: number };
-      deregs = dr.cnt;
-    } catch { /* table may not exist */ }
-
-    await insert.run(
-      date, cls, registered.cnt, tracked.cnt, airborne.cnt, idle.cnt,
-      util.avg_hours ?? 0, newRegs, deregs,
-    );
+  const stateRows = await db.prepare(
+    `SELECT aircraft_class, state, COUNT(*) AS cnt FROM adsb_aircraft_state
+     WHERE aircraft_class IS NOT NULL GROUP BY aircraft_class, state`,
+  ).all() as Array<{ aircraft_class: string; state: string; cnt: number }>;
+  const trackedMap = new Map<string, number>();
+  const airborneMap = new Map<string, number>();
+  const idleMap = new Map<string, number>();
+  for (const r of stateRows) {
+    const cnt = Number(r.cnt);
+    trackedMap.set(r.aircraft_class, (trackedMap.get(r.aircraft_class) ?? 0) + cnt);
+    if (r.state === "airborne") airborneMap.set(r.aircraft_class, cnt);
+    if (r.state === "idle" || r.state === "idle_transient") {
+      idleMap.set(r.aircraft_class, (idleMap.get(r.aircraft_class) ?? 0) + cnt);
+    }
   }
+
+  // Avg hours per tail over last 30 days, then averaged per class (subquery aliased — PG requires it)
+  const utilRows = await db.prepare(`
+    SELECT aircraft_class, ROUND(AVG(hours)::numeric, 2) AS avg_hours FROM (
+      SELECT aircraft_class, tail_number, SUM(flight_time_min) / 60.0 AS hours
+      FROM adsb_completed_legs
+      WHERE aircraft_class IS NOT NULL AND departure_time >= ?
+      GROUP BY aircraft_class, tail_number
+    ) t GROUP BY aircraft_class
+  `).all(thirtyDaysAgo) as Array<{ aircraft_class: string; avg_hours: number | null }>;
+  const utilMap = new Map(utilRows.map((r) => [r.aircraft_class, Number(r.avg_hours ?? 0)]));
+
+  // Registry changes per class (tolerate empty table)
+  const newRegsMap = new Map<string, number>();
+  const deregsMap = new Map<string, number>();
+  try {
+    const changes = await db.prepare(`
+      SELECT fa.aircraft_class, fc.change_type, COUNT(*) AS cnt
+      FROM faa_registry_changes fc
+      JOIN faa_aircraft fa ON fa.tail_number = fc.tail_number
+      WHERE fc.change_type IN ('new','deregistered')
+        AND fc.detected_at >= ?
+        AND fa.aircraft_class IS NOT NULL
+      GROUP BY fa.aircraft_class, fc.change_type
+    `).all(sevenDaysAgo) as Array<{ aircraft_class: string; change_type: string; cnt: number }>;
+    for (const r of changes) {
+      const cnt = Number(r.cnt);
+      if (r.change_type === "new") newRegsMap.set(r.aircraft_class, cnt);
+      else deregsMap.set(r.aircraft_class, cnt);
+    }
+  } catch { /* ignore */ }
+
+  const rows: unknown[][] = [];
+  for (const cls of classes) {
+    rows.push([
+      date, cls,
+      regMap.get(cls) ?? 0,
+      trackedMap.get(cls) ?? 0,
+      airborneMap.get(cls) ?? 0,
+      idleMap.get(cls) ?? 0,
+      utilMap.get(cls) ?? 0,
+      newRegsMap.get(cls) ?? 0,
+      deregsMap.get(cls) ?? 0,
+    ]);
+  }
+
+  await bulkUpsert(
+    db, "fleet_snapshot",
+    ["date", "aircraft_class", "total_registered", "total_tracked",
+     "total_airborne", "total_idle", "avg_utilization_hours",
+     "new_registrations", "deregistrations"],
+    rows,
+    ["date", "aircraft_class"],
+  );
 
   console.log(`[analytics] fleet_snapshot ${date}: ${classes.length} classes`);
   return classes.length;
 }
 
 // ── Rebuild All ─────────────────────────────────────────────────────────────
+
+function nextMonthStart(month: string): string {
+  const [y, m] = month.split("-").map(Number) as [number, number];
+  const ny = m === 12 ? y + 1 : y;
+  const nm = m === 12 ? 1 : m + 1;
+  return `${ny}-${String(nm).padStart(2, "0")}-01`;
+}
+
+function nextDayStart(date: string): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
 
 function monthRange(from: string, to: string): string[] {
   const months: string[] = [];
