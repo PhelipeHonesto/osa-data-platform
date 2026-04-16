@@ -15,6 +15,7 @@
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { pathToFileURL } from "node:url";
 import { S3Client, HeadObjectCommand, PutObjectCommand, type StorageClass } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import type Database from "better-sqlite3";
@@ -470,7 +471,11 @@ async function main() {
   closeDb();
 }
 
-main().catch((err) => {
-  console.error("[archive] Fatal:", err);
-  process.exit(1);
-});
+export { archiveDay };
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  main().catch((err) => {
+    console.error("[archive] Fatal:", err);
+    process.exit(1);
+  });
+}
