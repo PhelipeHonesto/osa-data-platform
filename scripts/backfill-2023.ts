@@ -28,7 +28,8 @@
 import { readFileSync, appendFileSync, mkdirSync, statfsSync } from "node:fs";
 import { S3Client, HeadBucketCommand, type StorageClass } from "@aws-sdk/client-s3";
 import { archiveDay } from "../src/ingestion/archive-adsb-raw.js";
-import { getDb, closeDb } from "../src/memory/database.js";
+import { getDatabase, setPgBridge } from "../src/memory/database.js";
+import { getPgBridge, closePg } from "../src/memory/pg-database.js";
 
 const PROBE_FILE = "/tmp/adsb-2023-probe.json";
 const S3_BUCKET = "osa-dumont-backup";
@@ -88,8 +89,13 @@ async function preflight(): Promise<Preflight> {
 
   // DB
   try {
-    const db = getDb();
-    db.prepare("SELECT COUNT(*) AS n FROM archive_progress").get();
+    if (process.env["DATABASE_TYPE"] !== "postgres") {
+      problems.push("DATABASE_TYPE=postgres required (SQLite path removed in Phase 6)");
+    } else {
+      setPgBridge(getPgBridge());
+      const db = getDatabase();
+      await db.prepare("SELECT COUNT(*) AS n FROM archive_progress").get();
+    }
   } catch (err) {
     problems.push(`db: ${err instanceof Error ? err.message : err}`);
   }
@@ -201,7 +207,11 @@ async function main(): Promise<void> {
   }
 
   const s3 = new S3Client({});
-  const db = getDb();
+  if (process.env["DATABASE_TYPE"] !== "postgres") {
+    throw new Error("backfill-2023 requires DATABASE_TYPE=postgres (SQLite path removed in Phase 6)");
+  }
+  setPgBridge(getPgBridge());
+  const db = getDatabase();
   const startMs = Date.now();
   const counts: Record<string, number> = { complete: 0, skipped: 0, no_release: 0, failed: 0 };
   let bytesUploaded = 0;
@@ -241,7 +251,7 @@ async function main(): Promise<void> {
     let marked = 0;
     for (const date of noReleaseTargets) {
       try {
-        stmt.run(date);
+        await stmt.run(date);
         marked++;
       } catch (err) {
         log(`no_release mark failed for ${date}: ${err instanceof Error ? err.message : err}`);
@@ -255,7 +265,7 @@ async function main(): Promise<void> {
   log(`bytes uploaded: ${formatBytes(bytesUploaded)}`);
   log(`runtime: ${elapsedH}h`);
 
-  closeDb();
+  await closePg();
   process.exit(stopRequested || (counts["failed"] ?? 0) > 0 ? 1 : 0);
 }
 

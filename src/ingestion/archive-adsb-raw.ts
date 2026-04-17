@@ -18,8 +18,8 @@ import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 import { S3Client, HeadObjectCommand, PutObjectCommand, type StorageClass } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
-import type Database from "better-sqlite3";
-import { getDb, closeDb } from "../memory/database.js";
+import { getDatabase, setPgBridge } from "../memory/database.js";
+import { getPgBridge, type DbBridge } from "../memory/pg-database.js";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -272,17 +272,17 @@ async function writeManifest(s3: S3Client, date: string, manifest: DayManifest):
   }));
 }
 
-// ── SQLite progress tracking ────────────────────────────────────────────────
+// ── Progress tracking (Postgres via DbBridge) ──────────────────────────────
 
-function markArchive(
-  db: Database.Database,
+async function markArchive(
+  db: DbBridge,
   date: string,
   status: "pending" | "processing" | "complete" | "failed" | "no_release",
   filesArchived = 0,
   totalBytes = 0,
   s3Prefix: string | null = null,
-): void {
-  db.prepare(`
+): Promise<void> {
+  await db.prepare(`
     INSERT INTO archive_progress (date, status, files_archived, total_bytes, s3_prefix, archived_at)
     VALUES (?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(date) DO UPDATE SET
@@ -294,8 +294,8 @@ function markArchive(
   `).run(date, status, filesArchived, totalBytes, s3Prefix);
 }
 
-function isArchiveComplete(db: Database.Database, date: string): boolean {
-  const row = db
+async function isArchiveComplete(db: DbBridge, date: string): Promise<boolean> {
+  const row = await db
     .prepare("SELECT status FROM archive_progress WHERE date = ?")
     .get(date) as { status: string } | undefined;
   return row?.status === "complete";
@@ -305,16 +305,16 @@ function isArchiveComplete(db: Database.Database, date: string): boolean {
 
 async function archiveDay(
   s3: S3Client,
-  db: Database.Database,
+  db: DbBridge,
   date: string,
   storageClass: StorageClass,
   check: boolean,
 ): Promise<"complete" | "skipped" | "no_release" | "failed"> {
   const startTime = Date.now();
 
-  // 1. Check SQLite first
-  if (isArchiveComplete(db, date)) {
-    const row = db.prepare("SELECT files_archived, total_bytes FROM archive_progress WHERE date = ?")
+  // 1. Check Postgres first
+  if (await isArchiveComplete(db, date)) {
+    const row = await db.prepare("SELECT files_archived, total_bytes FROM archive_progress WHERE date = ?")
       .get(date) as { files_archived: number; total_bytes: number };
     console.log(`[archive] ${date}: already archived (${row.files_archived} files, ${formatBytes(row.total_bytes)}) — skipping`);
     return "skipped";
@@ -324,7 +324,7 @@ async function archiveDay(
   const release = await fetchReleaseAssets(date);
   if (!release) {
     console.log(`[archive] ${date}: no prod release found — skipping`);
-    markArchive(db, date, "no_release");
+    await markArchive(db, date, "no_release");
     return "no_release";
   }
 
@@ -334,7 +334,7 @@ async function archiveDay(
   if (exists) {
     console.log(`[archive] ${date}: manifest exists in S3 — marking complete`);
     const totalSize = release.assets.reduce((sum, a) => sum + a.size, 0);
-    markArchive(db, date, "complete", release.assets.length, totalSize, prefix);
+    await markArchive(db, date, "complete", release.assets.length, totalSize, prefix);
     return "skipped";
   }
 
@@ -346,7 +346,7 @@ async function archiveDay(
   }
 
   // 5. Stream each asset to S3
-  markArchive(db, date, "processing");
+  await markArchive(db, date, "processing");
   const manifest: DayManifest = {
     date,
     release_tag: release.tag,
@@ -386,13 +386,13 @@ async function archiveDay(
     await writeManifest(s3, date, manifest);
 
     const durationSec = Math.round((Date.now() - startTime) / 1000);
-    markArchive(db, date, "complete", manifest.files.length, manifest.total_bytes, prefix);
+    await markArchive(db, date, "complete", manifest.files.length, manifest.total_bytes, prefix);
     console.log(`[archive] ${date}: done — ${manifest.files.length} files, ${formatBytes(manifest.total_bytes)}, ${durationSec}s`);
 
     return "complete";
   } catch (err) {
     const durationSec = Math.round((Date.now() - startTime) / 1000);
-    markArchive(db, date, "failed", 0, 0, prefix);
+    await markArchive(db, date, "failed", 0, 0, prefix);
     console.error(`[archive] ${date}: FAILED (${durationSec}s) —`, err instanceof Error ? err.message : err);
     return "failed";
   }
@@ -414,6 +414,14 @@ function sleep(ms: number): Promise<void> {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
+  if (process.env["DATABASE_TYPE"] !== "postgres") {
+    throw new Error(
+      "archive-adsb-raw requires DATABASE_TYPE=postgres (SQLite path removed in Phase 6)",
+    );
+  }
+  setPgBridge(getPgBridge());
+  const db = getDatabase();
+
   const args = parseArgs();
   const dates = buildDateRange(args);
 
@@ -426,9 +434,7 @@ async function main() {
   if (process.env["GITHUB_TOKEN"]) console.log(`[archive] Using GITHUB_TOKEN for authenticated requests`);
   console.log();
 
-  const db = getDb();
   const s3 = s3Client();
-
   const counts = { complete: 0, skipped: 0, no_release: 0, failed: 0 };
 
   if (args.concurrency <= 1) {
@@ -459,7 +465,7 @@ async function main() {
   console.log(`Archived: ${counts.complete} | Skipped: ${counts.skipped} | No release: ${counts.no_release} | Failed: ${counts.failed}`);
 
   if (!args.check) {
-    const totals = db.prepare(`
+    const totals = await db.prepare(`
       SELECT COUNT(*) as days, SUM(total_bytes) as bytes, SUM(files_archived) as files
       FROM archive_progress WHERE status = 'complete'
     `).get() as { days: number; bytes: number; files: number };
@@ -467,8 +473,6 @@ async function main() {
     const monthlyCost = ((totals.bytes ?? 0) / 1024 / 1024 / 1024) * 0.001;
     console.log(`Estimated Glacier cost: $${monthlyCost.toFixed(2)}/month`);
   }
-
-  closeDb();
 }
 
 export { archiveDay };

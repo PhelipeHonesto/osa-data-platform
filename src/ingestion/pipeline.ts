@@ -22,8 +22,7 @@
 
 import { execSync } from "node:child_process";
 import { resolve } from "node:path";
-import Database from "better-sqlite3";
-import { runMigrations } from "../memory/migrations.js";
+import pg from "pg";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -89,34 +88,35 @@ function buildFaaDiffArgs(): string {
 // ── Main ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  if (process.env["DATABASE_TYPE"] !== "postgres") {
+    throw new Error(
+      "pipeline requires DATABASE_TYPE=postgres (SQLite path removed in Phase 6)",
+    );
+  }
+
   const pipelineStart = new Date().toISOString();
   console.log(`\n╔${"═".repeat(58)}╗`);
   console.log(`║  OSA DUMONT — NIGHTLY BATCH PIPELINE                     ║`);
   console.log(`║  Started: ${pipelineStart}                ║`);
   console.log(`╚${"═".repeat(58)}╝`);
 
-  // Ensure migrations are current (creates pipeline_runs if needed)
-  const dbPath = process.env.DATABASE_PATH ?? process.env.DUMONT_DB_PATH ?? resolve("./data/dumont.db");
-  const db = new Database(dbPath);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  runMigrations(db);
+  const pgUrl = process.env["SUPABASE_DATABASE_URL"];
+  if (!pgUrl) throw new Error("SUPABASE_DATABASE_URL not set");
+  const pgClient = new pg.Client({ connectionString: pgUrl, ssl: { rejectUnauthorized: false } });
+  await pgClient.connect();
 
-  // Insert pipeline_runs row (status = 'running')
-  const runRow = db.prepare(`
-    INSERT INTO pipeline_runs (started_at, status)
-    VALUES (?, 'running')
-  `).run(pipelineStart);
-  const runId = runRow.lastInsertRowid;
+  // Insert pipeline_runs row (status = 'running'), capture id via RETURNING
+  const insertRun = await pgClient.query(
+    `INSERT INTO pipeline_runs (started_at, status) VALUES ($1, 'running') RETURNING id`,
+    [pipelineStart],
+  );
+  const runId = insertRun.rows[0]!.id as number;
 
   // Snapshot change counts before diff (so we can measure delta)
-  const changesBefore = db.prepare(
-    "SELECT COUNT(*) as cnt FROM faa_registry_changes",
-  ).get() as { cnt: number };
-  const countBefore = changesBefore.cnt;
-
-  // Close DB before shelling out (scripts open their own connections)
-  db.close();
+  const changesBefore = await pgClient.query(
+    "SELECT COUNT(*)::int as cnt FROM faa_registry_changes",
+  );
+  const countBefore = (changesBefore.rows[0] as { cnt: number }).cnt;
 
   const steps: StepResult[] = [];
   let stepsCompleted = 0;
@@ -182,10 +182,7 @@ async function main(): Promise<void> {
 
   // ── Step 5: Collect stats and log pipeline run ──────────────────────────
   const pipelineEnd = new Date().toISOString();
-  const db2 = new Database(dbPath);
-  db2.pragma("journal_mode = WAL");
 
-  // Query stats from the database
   const stats: PipelineStats = {
     newAircraft: 0,
     deregistered: 0,
@@ -198,21 +195,20 @@ async function main(): Promise<void> {
   };
 
   // Count changes detected in this run (delta from before)
-  const changesAfter = db2.prepare(
-    "SELECT COUNT(*) as cnt FROM faa_registry_changes",
-  ).get() as { cnt: number };
-  const totalNewChanges = changesAfter.cnt - countBefore;
+  const changesAfter = await pgClient.query(
+    "SELECT COUNT(*)::int as cnt FROM faa_registry_changes",
+  );
+  const totalNewChanges = (changesAfter.rows[0] as { cnt: number }).cnt - countBefore;
 
   if (totalNewChanges > 0) {
-    // Count changes with detected_at >= pipeline start
-    const preciseCounts = db2.prepare(`
-      SELECT change_type, COUNT(*) as cnt
-      FROM faa_registry_changes
-      WHERE detected_at >= ?
-      GROUP BY change_type
-    `).all(pipelineStart) as { change_type: string; cnt: number }[];
-
-    for (const row of preciseCounts) {
+    const preciseCounts = await pgClient.query(
+      `SELECT change_type, COUNT(*)::int as cnt
+       FROM faa_registry_changes
+       WHERE detected_at >= $1
+       GROUP BY change_type`,
+      [pipelineStart],
+    );
+    for (const row of preciseCounts.rows as Array<{ change_type: string; cnt: number }>) {
       switch (row.change_type) {
         case "new": stats.newAircraft = row.cnt; break;
         case "deregistered": stats.deregistered = row.cnt; break;
@@ -223,62 +219,46 @@ async function main(): Promise<void> {
   }
 
   // Classified aircraft: count non-null aircraft_class
-  const classifiedRow = db2.prepare(
-    "SELECT COUNT(*) as cnt FROM faa_aircraft WHERE aircraft_class IS NOT NULL",
-  ).get() as { cnt: number };
-  stats.aircraftClassified = classifiedRow.cnt;
+  const classifiedRow = await pgClient.query(
+    "SELECT COUNT(*)::int as cnt FROM faa_aircraft WHERE aircraft_class IS NOT NULL",
+  );
+  stats.aircraftClassified = (classifiedRow.rows[0] as { cnt: number }).cnt;
 
-  // Knowledge graph stats
-  const graphExists = db2.prepare(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_graph'",
-  ).get();
-
-  if (graphExists) {
-    const graphStats = db2.prepare(`
+  // Knowledge graph stats — table exists in PG; may be stale by one run if the
+  // .mjs scripts (Tier 3) haven't migrated yet.
+  try {
+    const graphStats = await pgClient.query(`
       SELECT
-        COUNT(*) as total,
-        SUM(is_charter_class) as charter,
-        SUM(is_ghost_candidate) as ghosts
+        COUNT(*)::int as total,
+        SUM(CASE WHEN is_charter_class THEN 1 ELSE 0 END)::int as charter,
+        SUM(CASE WHEN is_ghost_candidate THEN 1 ELSE 0 END)::int as ghosts
       FROM knowledge_graph
-    `).get() as { total: number; charter: number; ghosts: number };
-    stats.totalInGraph = graphStats.total;
-    stats.charterTracked = graphStats.charter;
-    stats.ghostCandidates = graphStats.ghosts;
+    `);
+    const g = graphStats.rows[0] as { total: number; charter: number; ghosts: number };
+    stats.totalInGraph = g.total;
+    stats.charterTracked = g.charter ?? 0;
+    stats.ghostCandidates = g.ghosts ?? 0;
+  } catch {
+    // knowledge_graph missing or schema mismatch — not fatal for the run
   }
 
   // Update pipeline_runs row
   const status = failedStep ? "failed" : "completed";
-  db2.prepare(`
-    UPDATE pipeline_runs SET
-      ended_at = ?,
-      status = ?,
-      steps_completed = ?,
-      failed_step = ?,
-      new_aircraft = ?,
-      deregistered = ?,
-      ownership_changes = ?,
-      field_changes = ?,
-      aircraft_classified = ?,
-      ghost_candidates = ?,
-      total_in_graph = ?,
-      charter_tracked = ?,
-      error_message = ?
-    WHERE id = ?
-  `).run(
-    pipelineEnd,
-    status,
-    stepsCompleted,
-    failedStep,
-    stats.newAircraft,
-    stats.deregistered,
-    stats.ownershipChanges,
-    stats.fieldChanges,
-    stats.aircraftClassified,
-    stats.ghostCandidates,
-    stats.totalInGraph,
-    stats.charterTracked,
-    failedStep ? steps.find((s) => !s.success)?.error ?? null : null,
-    runId,
+  await pgClient.query(
+    `UPDATE pipeline_runs SET
+       ended_at = $1, status = $2, steps_completed = $3, failed_step = $4,
+       new_aircraft = $5, deregistered = $6, ownership_changes = $7, field_changes = $8,
+       aircraft_classified = $9, ghost_candidates = $10, total_in_graph = $11,
+       charter_tracked = $12, error_message = $13
+     WHERE id = $14`,
+    [
+      pipelineEnd, status, stepsCompleted, failedStep,
+      stats.newAircraft, stats.deregistered, stats.ownershipChanges, stats.fieldChanges,
+      stats.aircraftClassified, stats.ghostCandidates, stats.totalInGraph,
+      stats.charterTracked,
+      failedStep ? steps.find((s) => !s.success)?.error ?? null : null,
+      runId,
+    ],
   );
 
   // ── Final Report ────────────────────────────────────────────────────────
@@ -308,44 +288,46 @@ async function main(): Promise<void> {
 
   // Show ownership changes if any
   if (stats.ownershipChanges > 0) {
-    const changes = db2.prepare(`
-      SELECT tail_number, old_value, new_value
-      FROM faa_registry_changes
-      WHERE change_type = 'ownership_change' AND detected_at >= ?
-      ORDER BY detected_at DESC
-      LIMIT 20
-    `).all(pipelineStart) as { tail_number: string; old_value: string; new_value: string }[];
+    const changes = await pgClient.query(
+      `SELECT tail_number, old_value, new_value
+       FROM faa_registry_changes
+       WHERE change_type = 'ownership_change' AND detected_at >= $1
+       ORDER BY detected_at DESC
+       LIMIT 20`,
+      [pipelineStart],
+    );
 
     console.log("\n── Ownership Changes (Transaction Signals) ──");
-    for (const r of changes) {
+    for (const r of changes.rows as Array<{ tail_number: string; old_value: string; new_value: string }>) {
       console.log(`  ${r.tail_number}: ${r.old_value} → ${r.new_value}`);
     }
   }
 
   // Show ghost candidates
   if (stats.ghostCandidates > 0) {
-    const ghosts = db2.prepare(`
-      SELECT tail_number, aircraft_class, ghost_airport, operator_name, idle_hours
-      FROM knowledge_graph
-      WHERE is_ghost_candidate = 1
-      ORDER BY idle_hours DESC
-      LIMIT 20
-    `).all() as { tail_number: string; aircraft_class: string; ghost_airport: string; operator_name: string; idle_hours: number }[];
-
-    console.log("\n── Ghost Candidates (Idle Charter Aircraft at Network Airports) ──");
-    for (const g of ghosts) {
-      console.log(`  ${g.tail_number} (${g.aircraft_class}) at ${g.ghost_airport} — ${g.operator_name}`);
+    try {
+      const ghosts = await pgClient.query(
+        `SELECT tail_number, aircraft_class, ghost_airport, operator_name, idle_hours
+         FROM knowledge_graph
+         WHERE is_ghost_candidate = true
+         ORDER BY idle_hours DESC
+         LIMIT 20`,
+      );
+      console.log("\n── Ghost Candidates (Idle Charter Aircraft at Network Airports) ──");
+      for (const g of ghosts.rows as Array<{ tail_number: string; aircraft_class: string; ghost_airport: string; operator_name: string; idle_hours: number }>) {
+        console.log(`  ${g.tail_number} (${g.aircraft_class}) at ${g.ghost_airport} — ${g.operator_name}`);
+      }
+    } catch {
+      /* knowledge_graph missing columns — skip */
     }
   }
 
-  db2.close();
-
   // Show the pipeline_runs row
-  const db3 = new Database(dbPath);
-  const row = db3.prepare("SELECT * FROM pipeline_runs WHERE id = ?").get(runId) as Record<string, unknown>;
+  const row = await pgClient.query("SELECT * FROM pipeline_runs WHERE id = $1", [runId]);
   console.log("\n── pipeline_runs row ──");
-  console.log(JSON.stringify(row, null, 2));
-  db3.close();
+  console.log(JSON.stringify(row.rows[0], null, 2));
+
+  await pgClient.end();
 
   if (failedStep) {
     process.exit(1);

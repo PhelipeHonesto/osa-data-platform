@@ -21,7 +21,9 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { resolve, join } from "node:path";
-import { getDb, closeDb } from "../memory/database.js";
+import { getDatabase, setPgBridge } from "../memory/database.js";
+import { getPgBridge, closePg } from "../memory/pg-database.js";
+import { bulkUpsert } from "../memory/bulk-upsert.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -208,37 +210,20 @@ async function resolveInputPath(): Promise<string> {
 // ── Run diff ──────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  if (process.env["DATABASE_TYPE"] !== "postgres") {
+    throw new Error(
+      "faa-daily-diff requires DATABASE_TYPE=postgres (SQLite path removed in Phase 6)",
+    );
+  }
+  setPgBridge(getPgBridge());
+  const db = getDatabase();
+
   const masterPath = await resolveInputPath();
   const freshData = parseMasterFile(masterPath);
 
-  const db = getDb();
-
-  // Ensure migration 17 has run (faa_registry_changes table)
-  const tables = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='faa_registry_changes'",
-  ).get();
-  if (!tables) {
-    console.log("[faa-diff] Running migration for faa_registry_changes...");
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS faa_registry_changes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        tail_number TEXT NOT NULL,
-        change_type TEXT NOT NULL CHECK (change_type IN ('new', 'deregistered', 'ownership_change', 'field_change')),
-        field_name TEXT,
-        old_value TEXT,
-        new_value TEXT,
-        detected_at TEXT NOT NULL DEFAULT (datetime('now')),
-        schema_version INTEGER NOT NULL DEFAULT 1
-      );
-      CREATE INDEX IF NOT EXISTS idx_faa_changes_tail ON faa_registry_changes(tail_number);
-      CREATE INDEX IF NOT EXISTS idx_faa_changes_type ON faa_registry_changes(change_type);
-      CREATE INDEX IF NOT EXISTS idx_faa_changes_date ON faa_registry_changes(detected_at);
-    `);
-  }
-
   // Load existing DB state
   console.log("[faa-diff] Loading existing faa_aircraft...");
-  const existingRows = db.prepare(`
+  const existingRows = await db.prepare(`
     SELECT tail_number, serial_number, mfr_model_code, year_manufactured,
            owner_name, owner_city, owner_state, registrant_type,
            certificate_number, status, icao_hex
@@ -252,35 +237,6 @@ async function main(): Promise<void> {
 
   console.log(`[faa-diff] DB has ${existingMap.size} aircraft, file has ${freshData.size}`);
 
-  // Prepare statements
-  const insertChange = db.prepare(`
-    INSERT INTO faa_registry_changes (tail_number, change_type, field_name, old_value, new_value)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-
-  const insertAircraft = db.prepare(`
-    INSERT INTO faa_aircraft
-      (tail_number, serial_number, mfr_model_code, year_manufactured,
-       owner_name, owner_city, owner_state, registrant_type,
-       certificate_number, status, icao_hex)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const updateAircraft = db.prepare(`
-    UPDATE faa_aircraft SET
-      serial_number = ?, mfr_model_code = ?, year_manufactured = ?,
-      owner_name = ?, owner_city = ?, owner_state = ?,
-      registrant_type = ?, certificate_number = ?, status = ?,
-      icao_hex = COALESCE(?, icao_hex),
-      updated_at = datetime('now')
-    WHERE tail_number = ?
-  `);
-
-  const markDeregistered = db.prepare(`
-    UPDATE faa_aircraft SET status = 'deregistered', updated_at = datetime('now')
-    WHERE tail_number = ?
-  `);
-
   const stats: DiffStats = {
     newRegistrations: 0,
     deregistered: 0,
@@ -291,95 +247,143 @@ async function main(): Promise<void> {
     totalInDb: existingMap.size,
   };
 
+  // Accumulators for bulk writes
+  const now = new Date().toISOString();
+  const aircraftUpserts: unknown[][] = [];   // rows for faa_aircraft (new + changed)
+  const changes: unknown[][] = [];            // rows for faa_registry_changes
+  const deregisteredTails: string[] = [];     // tails to mark deregistered
+
   // ── Diff: compare file vs DB ────────────────────────────────────────────
-  const runDiff = db.transaction(() => {
-    // 1. Check each aircraft in the fresh file
-    for (const [tail, fresh] of freshData) {
-      const existing = existingMap.get(tail);
+  console.log("[faa-diff] Diffing...");
 
-      if (!existing) {
-        // NEW registration
-        insertAircraft.run(
-          tail,
-          fresh.serialNumber || null,
-          fresh.mfrModelCode || null,
-          fresh.yearManufactured,
-          fresh.ownerName || null,
-          fresh.ownerCity || null,
-          fresh.ownerState || null,
-          fresh.registrantType || null,
-          fresh.certification || null,
-          fresh.statusCode || "active",
-          fresh.modeSCodeHex?.toLowerCase() || null,
-        );
-        insertChange.run(tail, "new", null, null, fresh.ownerName || null);
-        stats.newRegistrations++;
-        continue;
-      }
+  // 1. Check each aircraft in the fresh file
+  for (const [tail, fresh] of freshData) {
+    const existing = existingMap.get(tail);
 
-      // Compare tracked fields
-      let hasChanges = false;
-      const fieldValues: [string, string | null, string | null][] = [
-        ["owner_name", existing.owner_name, fresh.ownerName || null],
-        ["owner_city", existing.owner_city, fresh.ownerCity || null],
-        ["owner_state", existing.owner_state, fresh.ownerState || null],
-        ["serial_number", existing.serial_number, fresh.serialNumber || null],
-        ["mfr_model_code", existing.mfr_model_code, fresh.mfrModelCode || null],
-        ["status", existing.status, fresh.statusCode || null],
-        ["certificate_number", existing.certificate_number, fresh.certification || null],
-        ["registrant_type", existing.registrant_type, fresh.registrantType || null],
-      ];
-
-      for (const [fieldName, oldVal, newVal] of fieldValues) {
-        const oldNorm = (oldVal || "").trim().toUpperCase();
-        const newNorm = (newVal || "").trim().toUpperCase();
-        if (oldNorm === newNorm) continue;
-
-        // Detect ownership change specifically
-        const changeType = fieldName === "owner_name" ? "ownership_change" : "field_change";
-        insertChange.run(tail, changeType, fieldName, oldVal, newVal);
-
-        if (changeType === "ownership_change") {
-          stats.ownershipChanges++;
-        } else {
-          stats.fieldChanges++;
-        }
-        hasChanges = true;
-      }
-
-      if (hasChanges) {
-        // Update the DB row
-        updateAircraft.run(
-          fresh.serialNumber || null,
-          fresh.mfrModelCode || null,
-          fresh.yearManufactured,
-          fresh.ownerName || null,
-          fresh.ownerCity || null,
-          fresh.ownerState || null,
-          fresh.registrantType || null,
-          fresh.certification || null,
-          fresh.statusCode || "active",
-          fresh.modeSCodeHex?.toLowerCase() || null,
-          tail,
-        );
-      } else {
-        stats.unchanged++;
-      }
+    if (!existing) {
+      // NEW registration — push to bulk upsert + change log
+      aircraftUpserts.push([
+        tail,
+        fresh.serialNumber || null,
+        fresh.mfrModelCode || null,
+        fresh.yearManufactured,
+        fresh.ownerName || null,
+        fresh.ownerCity || null,
+        fresh.ownerState || null,
+        fresh.registrantType || null,
+        fresh.certification || null,
+        fresh.statusCode || "active",
+        fresh.modeSCodeHex?.toLowerCase() || null,
+        now,
+      ]);
+      changes.push([tail, "new", null, null, fresh.ownerName || null]);
+      stats.newRegistrations++;
+      continue;
     }
 
-    // 2. Check for deregistered aircraft (in DB but not in fresh file)
-    for (const [tail, existing] of existingMap) {
-      if (freshData.has(tail)) continue;
-      if (existing.status === "deregistered") continue; // already marked
+    // Compare tracked fields
+    let hasChanges = false;
+    const fieldValues: [string, string | null, string | null][] = [
+      ["owner_name", existing.owner_name, fresh.ownerName || null],
+      ["owner_city", existing.owner_city, fresh.ownerCity || null],
+      ["owner_state", existing.owner_state, fresh.ownerState || null],
+      ["serial_number", existing.serial_number, fresh.serialNumber || null],
+      ["mfr_model_code", existing.mfr_model_code, fresh.mfrModelCode || null],
+      ["status", existing.status, fresh.statusCode || null],
+      ["certificate_number", existing.certificate_number, fresh.certification || null],
+      ["registrant_type", existing.registrant_type, fresh.registrantType || null],
+    ];
 
-      markDeregistered.run(tail);
-      insertChange.run(tail, "deregistered", "status", existing.status, "deregistered");
-      stats.deregistered++;
+    for (const [fieldName, oldVal, newVal] of fieldValues) {
+      const oldNorm = (oldVal || "").trim().toUpperCase();
+      const newNorm = (newVal || "").trim().toUpperCase();
+      if (oldNorm === newNorm) continue;
+
+      const changeType = fieldName === "owner_name" ? "ownership_change" : "field_change";
+      changes.push([tail, changeType, fieldName, oldVal, newVal]);
+
+      if (changeType === "ownership_change") stats.ownershipChanges++;
+      else stats.fieldChanges++;
+      hasChanges = true;
     }
-  });
 
-  console.log("[faa-diff] Running diff...");
-  runDiff();
+    if (hasChanges) {
+      aircraftUpserts.push([
+        tail,
+        fresh.serialNumber || null,
+        fresh.mfrModelCode || null,
+        fresh.yearManufactured,
+        fresh.ownerName || null,
+        fresh.ownerCity || null,
+        fresh.ownerState || null,
+        fresh.registrantType || null,
+        fresh.certification || null,
+        fresh.statusCode || "active",
+        fresh.modeSCodeHex?.toLowerCase() || null,
+        now,
+      ]);
+    } else {
+      stats.unchanged++;
+    }
+  }
+
+  // 2. Check for deregistered aircraft (in DB but not in fresh file)
+  for (const [tail, existing] of existingMap) {
+    if (freshData.has(tail)) continue;
+    if (existing.status === "deregistered") continue;
+    deregisteredTails.push(tail);
+    changes.push([tail, "deregistered", "status", existing.status, "deregistered"]);
+    stats.deregistered++;
+  }
+
+  // ── Execute bulk writes ─────────────────────────────────────────────────
+  const AIRCRAFT_COLS = [
+    "tail_number", "serial_number", "mfr_model_code", "year_manufactured",
+    "owner_name", "owner_city", "owner_state", "registrant_type",
+    "certificate_number", "status", "icao_hex", "updated_at",
+  ];
+  // Preserve existing icao_hex if the fresh row's is null (mirrors the old
+  // UPDATE ... SET icao_hex = COALESCE(?, icao_hex) pattern).
+  const AIRCRAFT_UPDATE_CLAUSE = `
+    serial_number = EXCLUDED.serial_number,
+    mfr_model_code = EXCLUDED.mfr_model_code,
+    year_manufactured = EXCLUDED.year_manufactured,
+    owner_name = EXCLUDED.owner_name,
+    owner_city = EXCLUDED.owner_city,
+    owner_state = EXCLUDED.owner_state,
+    registrant_type = EXCLUDED.registrant_type,
+    certificate_number = EXCLUDED.certificate_number,
+    status = EXCLUDED.status,
+    icao_hex = COALESCE(EXCLUDED.icao_hex, faa_aircraft.icao_hex),
+    updated_at = EXCLUDED.updated_at
+  `.trim();
+
+  console.log(`[faa-diff] Writing ${aircraftUpserts.length} faa_aircraft upserts...`);
+  await bulkUpsert(
+    db, "faa_aircraft", AIRCRAFT_COLS, aircraftUpserts,
+    ["tail_number"], { updateClause: AIRCRAFT_UPDATE_CLAUSE },
+  );
+
+  if (deregisteredTails.length > 0) {
+    console.log(`[faa-diff] Marking ${deregisteredTails.length} tails as deregistered...`);
+    // Process in chunks to avoid parameter-count limits on very large batches.
+    const DEREG_CHUNK = 5000;
+    for (let i = 0; i < deregisteredTails.length; i += DEREG_CHUNK) {
+      const chunk = deregisteredTails.slice(i, i + DEREG_CHUNK);
+      const placeholders = chunk.map((_, j) => `$${j + 2}`).join(",");
+      await db.prepare(
+        `UPDATE faa_aircraft SET status='deregistered', updated_at=$1 WHERE tail_number IN (${placeholders})`,
+      ).run(now, ...chunk);
+    }
+  }
+
+  console.log(`[faa-diff] Writing ${changes.length} faa_registry_changes rows...`);
+  await bulkUpsert(
+    db, "faa_registry_changes",
+    ["tail_number", "change_type", "field_name", "old_value", "new_value"],
+    changes,
+    [],  // plain INSERT — id is SERIAL, no natural PK
+  );
 
   // ── Report ──────────────────────────────────────────────────────────────
   console.log("\n═══ FAA Registry Diff Report ═══");
@@ -393,7 +397,7 @@ async function main(): Promise<void> {
   console.log(`Unchanged:           ${stats.unchanged.toLocaleString()}`);
 
   // Show recent ownership changes (most interesting for transactions)
-  const recentOwnership = db.prepare(`
+  const recentOwnership = await db.prepare(`
     SELECT tail_number, old_value, new_value, detected_at
     FROM faa_registry_changes
     WHERE change_type = 'ownership_change'
@@ -409,7 +413,7 @@ async function main(): Promise<void> {
   }
 
   // Show new registrations
-  const recentNew = db.prepare(`
+  const recentNew = await db.prepare(`
     SELECT tail_number, new_value as owner
     FROM faa_registry_changes
     WHERE change_type = 'new'
@@ -424,7 +428,7 @@ async function main(): Promise<void> {
     }
   }
 
-  closeDb();
+  await closePg();
   console.log("\n[faa-diff] Done.");
 }
 
