@@ -19,8 +19,9 @@ import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { createInterface } from "node:readline";
 import { execSync } from "node:child_process";
 import { resolve, join } from "node:path";
-import type Database from "better-sqlite3";
-import { getDb, closeDb } from "../memory/database.js";
+import { getDatabase, setPgBridge } from "../memory/database.js";
+import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
+import { bulkUpsert } from "../memory/bulk-upsert.js";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -139,25 +140,23 @@ function parseFaaDate(raw: string): string | null {
 
 // ── DEREG.txt → faa_deregistered ────────────────────────────────────────────
 
-async function ingestDereg(db: Database.Database): Promise<void> {
+const DEREG_COLS = [
+  "tail_number", "serial_number", "manufacturer", "model", "common_name", "aircraft_class",
+  "year_manufactured", "owner_name", "owner_city", "owner_state", "owner_country",
+  "certificate_holder", "cancel_date", "last_action_date", "status", "mode_s_hex",
+] as const;
+
+async function ingestDereg(db: DbBridge): Promise<void> {
   const filePath = join(TEMP_DIR, "DEREG.txt");
   if (!existsSync(filePath)) { console.warn("[faa-full] DEREG.txt not found — skipping"); return; }
 
   console.log("[faa-full] Ingesting DEREG.txt → faa_deregistered...");
 
   // Clear existing data for idempotent re-runs
-  db.prepare("DELETE FROM faa_deregistered").run();
-
-  const insert = db.prepare(`
-    INSERT INTO faa_deregistered
-    (tail_number, serial_number, manufacturer, model, common_name, aircraft_class,
-     year_manufactured, owner_name, owner_city, owner_state, owner_country,
-     certificate_holder, cancel_date, last_action_date, status, mode_s_hex)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+  await db.prepare("DELETE FROM faa_deregistered").run();
 
   let count = 0;
-  let batch: Array<() => void> = [];
+  let batch: unknown[][] = [];
   let headersParsed = false;
   let idx = {
     nNumber: 0, serial: 0, mfrMdl: 0, yearMfr: 0,
@@ -166,9 +165,9 @@ async function ingestDereg(db: Database.Database): Promise<void> {
     statusCode: 0, modeSHex: 0,
   };
 
-  const flush = db.transaction((ops: Array<() => void>) => {
-    for (const op of ops) op();
-  });
+  // We collect a batch during streaming, then flush each chunk via bulkUpsert.
+  // Using onEntryPromise[] so node-readline's back-pressure waits for flushes.
+  const pendingFlushes: Array<() => Promise<void>> = [];
 
   await streamCsv(filePath, (headers, cols, _lineNum) => {
     if (!headersParsed) {
@@ -179,7 +178,6 @@ async function ingestDereg(db: Database.Database): Promise<void> {
       idx.name = colIdx(headers, "NAME");
       idx.city = colIdx(headers, "CITY");
       idx.state = colIdx(headers, "STATE");
-      // DEREG may have different column names — try common variants
       idx.country = headers.indexOf("COUNTRY") >= 0 ? colIdx(headers, "COUNTRY") : -1;
       idx.certHolder = headers.indexOf("CERT HOLDER") >= 0 ? colIdx(headers, "CERT HOLDER") : -1;
       idx.cancelDate = headers.indexOf("CANCEL DATE") >= 0 ? colIdx(headers, "CANCEL DATE") : -1;
@@ -193,31 +191,30 @@ async function ingestDereg(db: Database.Database): Promise<void> {
     if (!nNumber) return;
     const tailNumber = nNumber.startsWith("N") ? nNumber : `N${nNumber}`;
 
-    batch.push(() => {
-      insert.run(
-        tailNumber,
-        col(cols, idx.serial) || null,
-        null, // manufacturer — resolved via ACFTREF join later
-        col(cols, idx.mfrMdl) || null,
-        null, // common_name
-        null, // aircraft_class
-        col(cols, idx.yearMfr) || null,
-        col(cols, idx.name) || null,
-        col(cols, idx.city) || null,
-        col(cols, idx.state) || null,
-        idx.country >= 0 ? (col(cols, idx.country) || null) : null,
-        idx.certHolder >= 0 ? (col(cols, idx.certHolder) || null) : null,
-        idx.cancelDate >= 0 ? parseFaaDate(col(cols, idx.cancelDate)) : null,
-        idx.lastAction >= 0 ? parseFaaDate(col(cols, idx.lastAction)) : null,
-        col(cols, idx.statusCode) || null,
-        idx.modeSHex >= 0 ? (col(cols, idx.modeSHex).toLowerCase() || null) : null,
-      );
-    });
+    batch.push([
+      tailNumber,
+      col(cols, idx.serial) || null,
+      null, // manufacturer — resolved via ACFTREF join later
+      col(cols, idx.mfrMdl) || null,
+      null, // common_name
+      null, // aircraft_class
+      col(cols, idx.yearMfr) || null,
+      col(cols, idx.name) || null,
+      col(cols, idx.city) || null,
+      col(cols, idx.state) || null,
+      idx.country >= 0 ? (col(cols, idx.country) || null) : null,
+      idx.certHolder >= 0 ? (col(cols, idx.certHolder) || null) : null,
+      idx.cancelDate >= 0 ? parseFaaDate(col(cols, idx.cancelDate)) : null,
+      idx.lastAction >= 0 ? parseFaaDate(col(cols, idx.lastAction)) : null,
+      col(cols, idx.statusCode) || null,
+      idx.modeSHex >= 0 ? (col(cols, idx.modeSHex).toLowerCase() || null) : null,
+    ]);
 
     count++;
     if (batch.length >= BATCH_SIZE) {
-      flush(batch);
+      const chunk = batch;
       batch = [];
+      pendingFlushes.push(() => bulkUpsert(db, "faa_deregistered", [...DEREG_COLS], chunk, []));
     }
 
     if (count % 50_000 === 0) {
@@ -225,32 +222,33 @@ async function ingestDereg(db: Database.Database): Promise<void> {
     }
   });
 
-  if (batch.length > 0) flush(batch);
+  if (batch.length > 0) {
+    const chunk = batch;
+    pendingFlushes.push(() => bulkUpsert(db, "faa_deregistered", [...DEREG_COLS], chunk, []));
+  }
+  // Execute flushes serially to cap concurrent PG write pressure.
+  for (const f of pendingFlushes) await f();
   console.log(`[faa-full] DEREG: ${count.toLocaleString()} rows ingested`);
 }
 
 // ── ACFTREF.txt → faa_aircraft_types ────────────────────────────────────────
 
-async function ingestAcftRef(db: Database.Database): Promise<void> {
+const ACFTREF_COLS = [
+  "model_code", "manufacturer", "model", "type_aircraft",
+  "num_engines", "num_seats", "weight_class", "speed",
+] as const;
+
+async function ingestAcftRef(db: DbBridge): Promise<void> {
   const filePath = join(TEMP_DIR, "ACFTREF.txt");
   if (!existsSync(filePath)) { console.warn("[faa-full] ACFTREF.txt not found — skipping"); return; }
 
   console.log("[faa-full] Ingesting ACFTREF.txt → faa_aircraft_types...");
 
-  const insert = db.prepare(`
-    INSERT OR REPLACE INTO faa_aircraft_types
-    (model_code, manufacturer, model, type_aircraft, num_engines, num_seats, weight_class, speed)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
   let count = 0;
-  let batch: Array<() => void> = [];
+  let batch: unknown[][] = [];
+  const pendingFlushes: Array<() => Promise<void>> = [];
   let headersParsed = false;
   let idx = { code: 0, mfr: 0, model: 0, typeAc: 0, numEng: 0, numSeats: 0, weight: 0, speed: 0 };
-
-  const flush = db.transaction((ops: Array<() => void>) => {
-    for (const op of ops) op();
-  });
 
   await streamCsv(filePath, (headers, cols, _lineNum) => {
     if (!headersParsed) {
@@ -268,54 +266,52 @@ async function ingestAcftRef(db: Database.Database): Promise<void> {
     const code = col(cols, idx.code);
     if (!code) return;
 
-    batch.push(() => {
-      const numEng = parseInt(col(cols, idx.numEng), 10);
-      const numSeats = parseInt(col(cols, idx.numSeats), 10);
-      insert.run(
-        code,
-        col(cols, idx.mfr) || null,
-        col(cols, idx.model) || null,
-        col(cols, idx.typeAc) || null,
-        Number.isFinite(numEng) ? numEng : null,
-        Number.isFinite(numSeats) ? numSeats : null,
-        col(cols, idx.weight) || null,
-        col(cols, idx.speed) || null,
-      );
-    });
+    const numEng = parseInt(col(cols, idx.numEng), 10);
+    const numSeats = parseInt(col(cols, idx.numSeats), 10);
+    batch.push([
+      code,
+      col(cols, idx.mfr) || null,
+      col(cols, idx.model) || null,
+      col(cols, idx.typeAc) || null,
+      Number.isFinite(numEng) ? numEng : null,
+      Number.isFinite(numSeats) ? numSeats : null,
+      col(cols, idx.weight) || null,
+      col(cols, idx.speed) || null,
+    ]);
 
     count++;
     if (batch.length >= BATCH_SIZE) {
-      flush(batch);
+      const chunk = batch;
       batch = [];
+      pendingFlushes.push(() => bulkUpsert(db, "faa_aircraft_types", [...ACFTREF_COLS], chunk, ["model_code"]));
     }
   });
 
-  if (batch.length > 0) flush(batch);
+  if (batch.length > 0) {
+    const chunk = batch;
+    pendingFlushes.push(() => bulkUpsert(db, "faa_aircraft_types", [...ACFTREF_COLS], chunk, ["model_code"]));
+  }
+  for (const f of pendingFlushes) await f();
   console.log(`[faa-full] ACFTREF: ${count.toLocaleString()} aircraft types ingested`);
 }
 
 // ── ENGINE.txt → faa_engine_types ───────────────────────────────────────────
 
-async function ingestEngine(db: Database.Database): Promise<void> {
+const ENGINE_COLS = [
+  "engine_code", "manufacturer", "model", "type_engine", "horsepower", "thrust",
+] as const;
+
+async function ingestEngine(db: DbBridge): Promise<void> {
   const filePath = join(TEMP_DIR, "ENGINE.txt");
   if (!existsSync(filePath)) { console.warn("[faa-full] ENGINE.txt not found — skipping"); return; }
 
   console.log("[faa-full] Ingesting ENGINE.txt → faa_engine_types...");
 
-  const insert = db.prepare(`
-    INSERT OR REPLACE INTO faa_engine_types
-    (engine_code, manufacturer, model, type_engine, horsepower, thrust)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-
   let count = 0;
-  let batch: Array<() => void> = [];
+  let batch: unknown[][] = [];
+  const pendingFlushes: Array<() => Promise<void>> = [];
   let headersParsed = false;
   let idx = { code: 0, mfr: 0, model: 0, typeEng: 0, hp: 0, thrust: 0 };
-
-  const flush = db.transaction((ops: Array<() => void>) => {
-    for (const op of ops) op();
-  });
 
   await streamCsv(filePath, (headers, cols, _lineNum) => {
     if (!headersParsed) {
@@ -331,25 +327,28 @@ async function ingestEngine(db: Database.Database): Promise<void> {
     const code = col(cols, idx.code);
     if (!code) return;
 
-    batch.push(() => {
-      insert.run(
-        code,
-        col(cols, idx.mfr) || null,
-        col(cols, idx.model) || null,
-        col(cols, idx.typeEng) || null,
-        col(cols, idx.hp) || null,
-        col(cols, idx.thrust) || null,
-      );
-    });
+    batch.push([
+      code,
+      col(cols, idx.mfr) || null,
+      col(cols, idx.model) || null,
+      col(cols, idx.typeEng) || null,
+      col(cols, idx.hp) || null,
+      col(cols, idx.thrust) || null,
+    ]);
 
     count++;
     if (batch.length >= BATCH_SIZE) {
-      flush(batch);
+      const chunk = batch;
       batch = [];
+      pendingFlushes.push(() => bulkUpsert(db, "faa_engine_types", [...ENGINE_COLS], chunk, ["engine_code"]));
     }
   });
 
-  if (batch.length > 0) flush(batch);
+  if (batch.length > 0) {
+    const chunk = batch;
+    pendingFlushes.push(() => bulkUpsert(db, "faa_engine_types", [...ENGINE_COLS], chunk, ["engine_code"]));
+  }
+  for (const f of pendingFlushes) await f();
   console.log(`[faa-full] ENGINE: ${count.toLocaleString()} engine types ingested`);
 }
 
@@ -383,17 +382,22 @@ async function ingestDocindex(): Promise<void> {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
+  if (process.env["DATABASE_TYPE"] !== "postgres") {
+    throw new Error(
+      "faa-full-ingest requires DATABASE_TYPE=postgres (SQLite path removed in Phase 6)",
+    );
+  }
+  setPgBridge(getPgBridge());
+  const db = getDatabase();
+
   const args = parseArgs();
   const t0 = Date.now();
 
-  // Download unless skipping
   if (!args.skipDownload) {
     await downloadZip();
   } else {
     console.log("[faa-full] Using existing files in data/faa_raw/");
   }
-
-  const db = getDb();
 
   const shouldRun = (name: string) => args.all || args.file === name;
 
@@ -403,25 +407,24 @@ async function main() {
   if (shouldRun("ENGINE")) await ingestEngine(db);
   if (shouldRun("DOCINDEX")) await ingestDocindex();
 
-  // Summary
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
   console.log(`\n[faa-full] All done in ${elapsed}s`);
 
   if (args.all || args.file === "DEREG") {
-    const deregCount = (db.prepare("SELECT COUNT(*) as c FROM faa_deregistered").get() as { c: number }).c;
-    const uniqueTails = (db.prepare("SELECT COUNT(DISTINCT tail_number) as c FROM faa_deregistered").get() as { c: number }).c;
+    const deregCount = ((await db.prepare("SELECT COUNT(*) as c FROM faa_deregistered").get()) as { c: number }).c;
+    const uniqueTails = ((await db.prepare("SELECT COUNT(DISTINCT tail_number) as c FROM faa_deregistered").get()) as { c: number }).c;
     console.log(`  faa_deregistered: ${deregCount.toLocaleString()} rows (${uniqueTails.toLocaleString()} unique tails)`);
   }
   if (args.all || args.file === "ACFTREF") {
-    const typeCount = (db.prepare("SELECT COUNT(*) as c FROM faa_aircraft_types").get() as { c: number }).c;
+    const typeCount = ((await db.prepare("SELECT COUNT(*) as c FROM faa_aircraft_types").get()) as { c: number }).c;
     console.log(`  faa_aircraft_types: ${typeCount.toLocaleString()} types`);
   }
   if (args.all || args.file === "ENGINE") {
-    const engCount = (db.prepare("SELECT COUNT(*) as c FROM faa_engine_types").get() as { c: number }).c;
+    const engCount = ((await db.prepare("SELECT COUNT(*) as c FROM faa_engine_types").get()) as { c: number }).c;
     console.log(`  faa_engine_types: ${engCount.toLocaleString()} engine types`);
   }
 
-  closeDb();
+  await closePg();
 }
 
 main().catch((err) => {

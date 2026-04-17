@@ -21,7 +21,9 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { getDb, closeDb } from "../memory/database.js";
+import { getDatabase, setPgBridge } from "../memory/database.js";
+import { getPgBridge, closePg } from "../memory/pg-database.js";
+import { bulkUpsert } from "../memory/bulk-upsert.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
@@ -113,11 +115,18 @@ interface LocalOperator {
 
 // ── Main ──────────────────────────────────────────────────────────────────
 
-function main() {
+async function main(): Promise<void> {
+  if (process.env["DATABASE_TYPE"] !== "postgres") {
+    throw new Error(
+      "faa-operators-full requires DATABASE_TYPE=postgres (SQLite path removed in Phase 6)",
+    );
+  }
+  setPgBridge(getPgBridge());
+  const db = getDatabase();
+
   const args = process.argv.slice(2);
   const localFile = args[0] && !args[0].startsWith("--") ? resolve(args[0]) : null;
 
-  const db = getDb();
   const now = new Date().toISOString().replace("T", " ").slice(0, 19);
   const classPlaceholders = CHARTER_CLASSES.map(() => "?").join(",");
 
@@ -125,7 +134,7 @@ function main() {
 
   // ── Step 1: Mine certificate_holder from charter-class aircraft ────────
 
-  const certHolders = db.prepare(
+  const certHolders = await db.prepare(
     `SELECT certificate_holder, tail_number, aircraft_class, owner_name, owner_city, owner_state
      FROM faa_aircraft
      WHERE aircraft_class IN (${classPlaceholders})
@@ -183,21 +192,21 @@ function main() {
   console.log(`[operators] ${operatorMap.size} unique operators after filtering`);
 
   // ── Step 3: Try to resolve unmapped ICAO codes from adsb_completed_legs ─
+  // PG: use `= ANY($1::text[])` instead of SQLite's `json_each(?)`.
 
   const resolveIcao = db.prepare(
     `SELECT DISTINCT operator_name FROM adsb_completed_legs
      WHERE operator_name IS NOT NULL AND operator_name != ''
        AND LENGTH(operator_name) > 5
-       AND tail_number IN (SELECT value FROM json_each(?))
+       AND tail_number = ANY(?)
      LIMIT 1`,
   );
 
   let resolved = 0;
   for (const op of operatorMap.values()) {
     if (!op.isIcaoCode || op.name !== op.code) continue;
-    // Try to find a full name from legs data
-    const tails = [...op.tailNumbers].slice(0, 50); // limit for query size
-    const row = resolveIcao.get(JSON.stringify(tails)) as { operator_name: string } | undefined;
+    const tails = [...op.tailNumbers].slice(0, 50);
+    const row = await resolveIcao.get(tails) as { operator_name: string } | undefined;
     if (row) {
       op.name = row.operator_name;
       resolved++;
@@ -205,12 +214,19 @@ function main() {
   }
   console.log(`[operators] Resolved ${resolved} ICAO codes to full names from ADS-B legs`);
 
-  // ── Step 4: Get trip counts ───────────────────────────────────────────
+  // ── Step 4: Get trip counts (single aggregated query vs per-operator loop) ─
 
-  const tripCountStmt = db.prepare(
-    `SELECT COUNT(*) as trips FROM adsb_completed_legs
-     WHERE tail_number IN (SELECT value FROM json_each(?))
-       AND departure_time >= datetime('now', '-12 months')`,
+  const twelveMonthsAgo = new Date();
+  twelveMonthsAgo.setUTCFullYear(twelveMonthsAgo.getUTCFullYear() - 1);
+  const twelveMonthsAgoIso = twelveMonthsAgo.toISOString();
+
+  const allTailCounts = await db.prepare(
+    `SELECT tail_number, COUNT(*)::int as trips FROM adsb_completed_legs
+     WHERE departure_time >= ? AND tail_number IS NOT NULL
+     GROUP BY tail_number`,
+  ).all(twelveMonthsAgoIso) as Array<{ tail_number: string; trips: number }>;
+  const tripCountByTail = new Map<string, number>(
+    allTailCounts.map((r) => [r.tail_number, r.trips]),
   );
 
   // ── Step 5: Merge local file if provided ──────────────────────────────
@@ -253,109 +269,92 @@ function main() {
     console.log(`[operators] Merged ${merged} new operators from local file`);
   }
 
-  // ── Step 6: Upsert into faa_operators ─────────────────────────────────
+  // ── Step 6: Upsert into faa_operators (single bulk upsert) ────────────
 
   console.log("[operators] Upserting into faa_operators...");
 
-  const upsertOp = db.prepare(
-    `INSERT INTO faa_operators (certificate_number, name, dba_name, city, state, aircraft_count, status, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
-     ON CONFLICT(certificate_number) DO UPDATE SET
-       name = CASE WHEN LENGTH(excluded.name) > LENGTH(faa_operators.name) THEN excluded.name ELSE faa_operators.name END,
-       city = COALESCE(excluded.city, faa_operators.city),
-       state = COALESCE(excluded.state, faa_operators.state),
-       aircraft_count = excluded.aircraft_count,
-       updated_at = excluded.updated_at`,
-  );
-
-  let upserted = 0;
+  const operatorRows: unknown[][] = [];
   const allOperators: Array<{
     name: string; fleetSize: number; trips: number; classes: string[];
   }> = [];
 
-  const upsertAll = db.transaction(() => {
-    for (const op of operatorMap.values()) {
-      const fleetSize = op.tailNumbers.size;
-      const tails = [...op.tailNumbers];
-      const trips = tails.length > 0
-        ? (tripCountStmt.get(JSON.stringify(tails.slice(0, 200))) as { trips: number }).trips
-        : 0;
+  for (const op of operatorMap.values()) {
+    const fleetSize = op.tailNumbers.size;
+    // Sum per-tail trip counts from the pre-fetched map (no more per-operator query)
+    let trips = 0;
+    for (const tail of op.tailNumbers) trips += tripCountByTail.get(tail) ?? 0;
 
-      // Use ICAO code as certificate_number for ICAO operators, name hash otherwise
-      const certNum = op.isIcaoCode ? op.code : op.code;
-      const dbaName = op.isIcaoCode && op.name !== op.code ? op.code : null;
+    const certNum = op.code;
+    const dbaName = op.isIcaoCode && op.name !== op.code ? op.code : null;
 
-      upsertOp.run(certNum, op.name, dbaName, op.city, op.state, fleetSize, now);
-      upserted++;
+    operatorRows.push([certNum, op.name, dbaName, op.city, op.state, fleetSize, "active", now]);
+    allOperators.push({ name: op.name, fleetSize, trips, classes: [...op.aircraftClasses] });
+  }
 
-      allOperators.push({
-        name: op.name,
-        fleetSize,
-        trips,
-        classes: [...op.aircraftClasses],
-      });
-    }
-  });
-
-  upsertAll();
-  console.log(`[operators] Upserted ${upserted} operators`);
+  await bulkUpsert(
+    db, "faa_operators",
+    ["certificate_number", "name", "dba_name", "city", "state",
+     "aircraft_count", "status", "updated_at"],
+    operatorRows,
+    ["certificate_number"],
+    {
+      updateClause:
+        `name = CASE WHEN LENGTH(EXCLUDED.name) > LENGTH(faa_operators.name) ` +
+        `         THEN EXCLUDED.name ELSE faa_operators.name END, ` +
+        `city = COALESCE(EXCLUDED.city, faa_operators.city), ` +
+        `state = COALESCE(EXCLUDED.state, faa_operators.state), ` +
+        `aircraft_count = EXCLUDED.aircraft_count, ` +
+        `updated_at = EXCLUDED.updated_at`,
+    },
+  );
+  console.log(`[operators] Upserted ${operatorRows.length} operators`);
 
   // ── Step 7: Update adsb_aircraft_state operator_name ──────────────────
+  // PG: one UPDATE per operator with `= ANY($1::text[])`. Acceptable for
+  // ~1000 operators; this is a rarely-run CLI.
 
   console.log("[operators] Updating adsb_aircraft_state operator names...");
 
   const updateState = db.prepare(
     `UPDATE adsb_aircraft_state SET operator_name = ?
-     WHERE tail_number IN (SELECT value FROM json_each(?))
+     WHERE tail_number = ANY(?)
        AND (operator_name IS NULL OR operator_name = '' OR operator_name = ?)`,
   );
 
   let stateUpdated = 0;
-  const updateStateTx = db.transaction(() => {
-    for (const op of operatorMap.values()) {
-      if (op.isIcaoCode && op.name === op.code) continue; // unresolved ICAO, skip
-      const tails = JSON.stringify([...op.tailNumbers]);
-      // Update rows where operator_name is null/empty or still the raw ICAO code
-      const result = updateState.run(op.name, tails, op.code);
-      stateUpdated += result.changes;
-    }
-  });
+  for (const op of operatorMap.values()) {
+    if (op.isIcaoCode && op.name === op.code) continue;
+    const tails = [...op.tailNumbers];
+    if (tails.length === 0) continue;
+    const result = await updateState.run(op.name, tails, op.code) as { changes: number };
+    stateUpdated += result.changes;
+  }
 
-  updateStateTx();
   console.log(`[operators] Updated ${stateUpdated} aircraft state rows with operator names`);
 
-  // ── Step 8: Also update from faa_aircraft.certificate_holder → adsb_aircraft_state ─
+  // ── Step 8: Backfill from faa_aircraft.certificate_holder ─────────────
+  // PG's UPDATE ... FROM is the cleaner analog of SQLite's correlated subquery.
 
-  // For aircraft where adsb_aircraft_state has no operator but faa_aircraft has certificate_holder
-  const backfillState = db.prepare(
-    `UPDATE adsb_aircraft_state
-     SET operator_name = (
-       SELECT f.certificate_holder FROM faa_aircraft f
-       WHERE f.tail_number = adsb_aircraft_state.tail_number
-         AND f.certificate_holder IS NOT NULL
-         AND f.certificate_holder != '' AND f.certificate_holder != '-'
-         AND LENGTH(f.certificate_holder) > 5
-     )
-     WHERE (operator_name IS NULL OR operator_name = '')
-       AND tail_number IN (
-         SELECT tail_number FROM faa_aircraft
-         WHERE certificate_holder IS NOT NULL
-           AND certificate_holder != '' AND certificate_holder != '-'
-           AND LENGTH(certificate_holder) > 5
-       )`,
-  );
-
-  const backfillResult = backfillState.run();
+  const backfillResult = await db.prepare(
+    `UPDATE adsb_aircraft_state s
+     SET operator_name = f.certificate_holder
+     FROM faa_aircraft f
+     WHERE f.tail_number = s.tail_number
+       AND (s.operator_name IS NULL OR s.operator_name = '')
+       AND f.certificate_holder IS NOT NULL
+       AND f.certificate_holder != '' AND f.certificate_holder != '-'
+       AND LENGTH(f.certificate_holder) > 5`,
+  ).run() as { changes: number };
   console.log(`[operators] Backfilled ${backfillResult.changes} more aircraft state rows from FAA registry`);
 
   // ── Report ────────────────────────────────────────────────────────────
 
-  const totalOps = (db.prepare("SELECT COUNT(*) as cnt FROM faa_operators").get() as { cnt: number }).cnt;
-  const withFleet = (db.prepare("SELECT COUNT(*) as cnt FROM faa_operators WHERE aircraft_count > 0").get() as { cnt: number }).cnt;
-  const totalLinked = (db.prepare(
+  const totalOps = ((await db.prepare("SELECT COUNT(*) as cnt FROM faa_operators").get()) as { cnt: number }).cnt;
+  const withFleet = ((await db.prepare("SELECT COUNT(*) as cnt FROM faa_operators WHERE aircraft_count > 0").get()) as { cnt: number }).cnt;
+  const totalLinked = ((await db.prepare(
     "SELECT COUNT(*) as cnt FROM adsb_aircraft_state WHERE operator_name IS NOT NULL AND operator_name != '' AND operator_name != '-'",
-  ).get() as { cnt: number }).cnt;
-  const totalState = (db.prepare("SELECT COUNT(*) as cnt FROM adsb_aircraft_state").get() as { cnt: number }).cnt;
+  ).get()) as { cnt: number }).cnt;
+  const totalState = ((await db.prepare("SELECT COUNT(*) as cnt FROM adsb_aircraft_state").get()) as { cnt: number }).cnt;
 
   // Sort for display
   allOperators.sort((a, b) => b.fleetSize - a.fleetSize || b.trips - a.trips);
@@ -366,12 +365,12 @@ function main() {
   console.log(`Aircraft with operator:   ${totalLinked.toLocaleString()} / ${totalState.toLocaleString()} (${Math.round(totalLinked / totalState * 100)}%)`);
 
   // Fleet size distribution
-  const dist = db.prepare(
+  const dist = await db.prepare(
     `SELECT
-       SUM(CASE WHEN aircraft_count >= 50 THEN 1 ELSE 0 END) as large,
-       SUM(CASE WHEN aircraft_count >= 10 AND aircraft_count < 50 THEN 1 ELSE 0 END) as medium,
-       SUM(CASE WHEN aircraft_count >= 2 AND aircraft_count < 10 THEN 1 ELSE 0 END) as small,
-       SUM(CASE WHEN aircraft_count = 1 THEN 1 ELSE 0 END) as single
+       SUM(CASE WHEN aircraft_count >= 50 THEN 1 ELSE 0 END)::int as large,
+       SUM(CASE WHEN aircraft_count >= 10 AND aircraft_count < 50 THEN 1 ELSE 0 END)::int as medium,
+       SUM(CASE WHEN aircraft_count >= 2 AND aircraft_count < 10 THEN 1 ELSE 0 END)::int as small,
+       SUM(CASE WHEN aircraft_count = 1 THEN 1 ELSE 0 END)::int as single
      FROM faa_operators WHERE aircraft_count > 0`,
   ).get() as { large: number; medium: number; small: number; single: number };
 
@@ -392,8 +391,11 @@ function main() {
     );
   }
 
-  closeDb();
+  await closePg();
   console.log(`\n[operators] Done.`);
 }
 
-main();
+main().catch((err) => {
+  console.error("[operators] Fatal:", err);
+  process.exit(1);
+});

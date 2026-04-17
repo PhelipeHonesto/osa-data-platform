@@ -139,7 +139,7 @@ async function main(): Promise<void> {
   if (!failedStep) {
     const step2 = runStep(
       "Classify Aircraft",
-      "node classify-aircraft.mjs",
+      "npx tsx src/ingestion/classify-aircraft.ts",
     );
     steps.push(step2);
     if (!step2.success) {
@@ -153,7 +153,7 @@ async function main(): Promise<void> {
   if (!failedStep) {
     const step3 = runStep(
       "Rebuild Knowledge Graph",
-      "node update-graph.mjs",
+      "npx tsx src/ingestion/update-graph.ts",
     );
     steps.push(step3);
     if (!step3.success) {

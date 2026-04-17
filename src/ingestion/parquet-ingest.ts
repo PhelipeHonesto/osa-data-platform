@@ -2,25 +2,29 @@
  * Parquet Flight Data Ingestion (via CSV intermediate)
  *
  * Step 1: Python converts Parquet → filtered CSV (charter-class US flights only)
- * Step 2: This script reads the CSV and inserts into SQLite
+ * Step 2: This script reads the CSV and bulk-inserts into Postgres.
  *
  * Usage:
  *   npm run ingest:parquet ~/Downloads/2025_Q4_detailed_github.parquet
  *
  * Or if you already have the CSV:
  *   npm run ingest:csv /tmp/charter-flights.csv
+ *
+ * NOTE: The pre-Phase-6 version had per-row dedup via SELECT ... datetime(?, '-10 minutes').
+ * That round-tripped N times and was expensive. Post-migration, dedup is done
+ * per-batch by pre-fetching existing (tail_number, departure_time) pairs for
+ * the batch's tails and filtering in-memory with a ±10-min bucket set.
  */
 
 import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type Database from "better-sqlite3";
-import { getDb, closeDb } from "../memory/database.js";
+import { getDatabase, setPgBridge } from "../memory/database.js";
+import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
+import { bulkUpsert } from "../memory/bulk-upsert.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// Aircraft class mapping lives in parquet-to-csv.py — Python does the filtering
 
 interface FlightRow {
   icaoHex: string;
@@ -52,10 +56,59 @@ function computeFlightTimeMin(dep: string, arr: string): number | null {
   const arrMs = new Date(arr).getTime();
   if (isNaN(depMs) || isNaN(arrMs)) return null;
   const min = Math.round((arrMs - depMs) / 60000);
-  return min > 0 && min < 1440 ? min : null; // max 24h, must be positive
+  return min > 0 && min < 1440 ? min : null;
 }
 
-function ingestCSV(db: Database.Database, csvPath: string): void {
+const LEG_COLS = [
+  "icao_hex", "tail_number", "operator_name", "aircraft_type", "aircraft_class",
+  "origin_icao", "destination_icao", "departure_time", "arrival_time", "flight_time_min",
+] as const;
+
+const AIRCRAFT_COLS = [
+  "tail_number", "icao_hex", "model", "aircraft_class", "certificate_holder", "status", "updated_at",
+] as const;
+
+const AIRCRAFT_UPDATE_CLAUSE = `
+  icao_hex = COALESCE(EXCLUDED.icao_hex, faa_aircraft.icao_hex),
+  model = COALESCE(EXCLUDED.model, faa_aircraft.model),
+  aircraft_class = COALESCE(EXCLUDED.aircraft_class, faa_aircraft.aircraft_class),
+  certificate_holder = COALESCE(EXCLUDED.certificate_holder, faa_aircraft.certificate_holder),
+  updated_at = EXCLUDED.updated_at
+`.trim();
+
+/** Pre-fetch existing (tail, dep_time_minute) pairs for this batch's tails,
+ *  returning a lookup map. Callers use this to filter near-duplicates (±10 min). */
+async function prefetchExisting(
+  db: DbBridge,
+  tails: string[],
+): Promise<Map<string, Set<number>>> {
+  if (tails.length === 0) return new Map();
+  const placeholders = tails.map((_, i) => `$${i + 1}`).join(",");
+  const sql =
+    `SELECT tail_number, departure_time FROM adsb_completed_legs ` +
+    `WHERE tail_number IN (${placeholders})`;
+  const rows = await db.prepare(sql).all(...tails) as Array<{ tail_number: string; departure_time: string }>;
+  const map = new Map<string, Set<number>>();
+  for (const r of rows) {
+    const min = Math.floor(new Date(r.departure_time).getTime() / 60000);
+    if (!Number.isFinite(min)) continue;
+    const s = map.get(r.tail_number) ?? new Set<number>();
+    s.add(min);
+    map.set(r.tail_number, s);
+  }
+  return map;
+}
+
+function isNearDuplicate(row: FlightRow, existing: Map<string, Set<number>>): boolean {
+  const ex = existing.get(row.tailNumber);
+  if (!ex) return false;
+  const min = Math.floor(new Date(row.departureTime).getTime() / 60000);
+  if (!Number.isFinite(min)) return false;
+  for (let m = min - 10; m <= min + 10; m++) if (ex.has(m)) return true;
+  return false;
+}
+
+async function ingestCSV(db: DbBridge, csvPath: string): Promise<void> {
   console.log(`[parquet-ingest] Reading ${csvPath}...`);
   const content = readFileSync(csvPath, "utf-8");
   const lines = content.split("\n");
@@ -64,69 +117,49 @@ function ingestCSV(db: Database.Database, csvPath: string): void {
 
   console.log(`[parquet-ingest] ${lines.length - 1} rows to process`);
 
-  const insertLeg = db.prepare(`
-    INSERT INTO adsb_completed_legs
-    (icao_hex, tail_number, operator_name, aircraft_type, aircraft_class,
-     origin_icao, destination_icao, departure_time, arrival_time, flight_time_min)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const upsertAircraft = db.prepare(`
-    INSERT INTO faa_aircraft (tail_number, icao_hex, model, aircraft_class, certificate_holder, status, updated_at)
-    VALUES (?, ?, ?, ?, ?, 'active', datetime('now'))
-    ON CONFLICT(tail_number) DO UPDATE SET
-      icao_hex = COALESCE(excluded.icao_hex, faa_aircraft.icao_hex),
-      model = COALESCE(excluded.model, faa_aircraft.model),
-      aircraft_class = COALESCE(excluded.aircraft_class, faa_aircraft.aircraft_class),
-      certificate_holder = COALESCE(excluded.certificate_holder, faa_aircraft.certificate_holder),
-      updated_at = datetime('now')
-  `);
-
-  // Dedup check: same tail + departure within 10 minutes
-  const checkDup = db.prepare(`
-    SELECT 1 FROM adsb_completed_legs
-    WHERE tail_number = ? AND departure_time BETWEEN datetime(?, '-10 minutes') AND datetime(?, '+10 minutes')
-    LIMIT 1
-  `);
-
+  const BATCH_SIZE = 10_000;
+  let batch: FlightRow[] = [];
   let inserted = 0;
   let dupes = 0;
   let errors = 0;
   const seenAircraft = new Set<string>();
   const classCounts: Record<string, number> = {};
+  const now = new Date().toISOString();
 
-  const BATCH_SIZE = 10000;
-  let batch: FlightRow[] = [];
+  async function flushBatch(): Promise<void> {
+    if (batch.length === 0) return;
+    const tails = [...new Set(batch.map((r) => r.tailNumber))];
+    const existing = await prefetchExisting(db, tails);
 
-  function flushBatch(): void {
-    const runBatch = db.transaction((rows: FlightRow[]) => {
-      for (const r of rows) {
-        // Dedup
-        if (checkDup.get(r.tailNumber, r.departureTime, r.departureTime)) {
-          dupes++;
-          continue;
-        }
+    const legRows: unknown[][] = [];
+    const aircraftRows: unknown[][] = [];
 
-        const flightMin = computeFlightTimeMin(r.departureTime, r.arrivalTime);
-        insertLeg.run(
-          r.icaoHex, r.tailNumber, r.operator, r.aircraftType, r.aircraftClass,
-          r.originIcao || null, r.destIcao || null,
-          r.departureTime, r.arrivalTime, flightMin,
-        );
-        inserted++;
+    for (const r of batch) {
+      if (isNearDuplicate(r, existing)) { dupes++; continue; }
 
-        if (r.aircraftClass) {
-          classCounts[r.aircraftClass] = (classCounts[r.aircraftClass] ?? 0) + 1;
-        }
+      legRows.push([
+        r.icaoHex, r.tailNumber, r.operator, r.aircraftType, r.aircraftClass,
+        r.originIcao || null, r.destIcao || null,
+        r.departureTime, r.arrivalTime, computeFlightTimeMin(r.departureTime, r.arrivalTime),
+      ]);
+      inserted++;
 
-        // Upsert aircraft (once per tail)
-        if (!seenAircraft.has(r.tailNumber)) {
-          seenAircraft.add(r.tailNumber);
-          upsertAircraft.run(r.tailNumber, r.icaoHex || null, r.aircraftType || null, r.aircraftClass || null, r.operator || null);
-        }
+      if (r.aircraftClass) classCounts[r.aircraftClass] = (classCounts[r.aircraftClass] ?? 0) + 1;
+
+      if (!seenAircraft.has(r.tailNumber)) {
+        seenAircraft.add(r.tailNumber);
+        aircraftRows.push([
+          r.tailNumber, r.icaoHex || null, r.aircraftType || null,
+          r.aircraftClass || null, r.operator || null, "active", now,
+        ]);
       }
-    });
-    runBatch(batch);
+    }
+
+    await bulkUpsert(db, "adsb_completed_legs", [...LEG_COLS], legRows, []);
+    await bulkUpsert(
+      db, "faa_aircraft", [...AIRCRAFT_COLS], aircraftRows,
+      ["tail_number"], { updateClause: AIRCRAFT_UPDATE_CLAUSE },
+    );
     batch = [];
   }
 
@@ -147,13 +180,12 @@ function ingestCSV(db: Database.Database, csvPath: string): void {
         departureTime: cols[7] ?? "",
         arrivalTime: cols[8] ?? "",
       };
-
       if (!row.tailNumber || !row.departureTime) continue;
       batch.push(row);
 
       if (batch.length >= BATCH_SIZE) {
-        flushBatch();
-        if (inserted % 100000 < BATCH_SIZE) {
+        await flushBatch();
+        if (inserted % 100_000 < BATCH_SIZE) {
           console.log(`[parquet-ingest] ${inserted.toLocaleString()} inserted, ${dupes.toLocaleString()} dupes, ${errors} errors`);
         }
       }
@@ -162,50 +194,53 @@ function ingestCSV(db: Database.Database, csvPath: string): void {
     }
   }
 
-  // Flush remaining
-  if (batch.length > 0) flushBatch();
+  if (batch.length > 0) await flushBatch();
 
   console.log("\n═══════════════════════════════════════════");
   console.log("Parquet Flight Data Ingestion Complete");
   console.log("═══════════════════════════════════════════");
-  console.log(`Inserted: ${inserted.toLocaleString()}`);
+  console.log(`Inserted:           ${inserted.toLocaleString()}`);
   console.log(`Duplicates skipped: ${dupes.toLocaleString()}`);
-  console.log(`Errors: ${errors}`);
-  console.log(`Unique aircraft: ${seenAircraft.size.toLocaleString()}`);
+  console.log(`Errors:             ${errors}`);
+  console.log(`Unique aircraft:    ${seenAircraft.size.toLocaleString()}`);
   console.log("\nCharter-class breakdown:");
   for (const [cls, cnt] of Object.entries(classCounts).sort((a, b) => b[1] - a[1])) {
     console.log(`  ${cls}: ${cnt.toLocaleString()}`);
   }
 
-  // Total legs
-  const total = (db.prepare("SELECT COUNT(*) as cnt FROM adsb_completed_legs").get() as { cnt: number }).cnt;
+  const total = ((await db.prepare("SELECT COUNT(*) as cnt FROM adsb_completed_legs").get()) as { cnt: number }).cnt;
   console.log(`\nTotal legs in database: ${total.toLocaleString()}`);
 }
 
 async function main(): Promise<void> {
+  if (process.env["DATABASE_TYPE"] !== "postgres") {
+    throw new Error(
+      "parquet-ingest requires DATABASE_TYPE=postgres (SQLite path removed in Phase 6)",
+    );
+  }
+  setPgBridge(getPgBridge());
+  const db = getDatabase();
+
   const inputPath = process.argv[2];
   if (!inputPath) {
     console.error("Usage: npm run ingest:parquet <file.parquet|file.csv>");
     process.exit(1);
   }
 
-  const db = getDb();
   const resolved = resolve(inputPath);
 
   if (resolved.endsWith(".csv")) {
-    // Direct CSV ingestion
-    ingestCSV(db, resolved);
+    await ingestCSV(db, resolved);
   } else {
-    // Parquet → CSV → ingest
     const csvPath = "/tmp/charter-flights.csv";
     const pyScript = resolve(__dirname, "parquet-to-csv.py");
     console.log(`[parquet-ingest] Converting Parquet → CSV via Python...`);
     console.log(`[parquet-ingest] python3 ${pyScript} ${resolved} ${csvPath}`);
     execSync(`python3 "${pyScript}" "${resolved}" "${csvPath}"`, { stdio: "inherit", timeout: 600000 });
-    ingestCSV(db, csvPath);
+    await ingestCSV(db, csvPath);
   }
 
-  closeDb();
+  await closePg();
 }
 
 main().catch((err) => {

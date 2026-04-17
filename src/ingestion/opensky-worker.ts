@@ -1,16 +1,18 @@
 /**
- * OpenSky ADS-B Ingestion Worker — standalone CLI process.
+ * OpenSky ADS-B Ingestion Worker — alternate feed to adsblol-live-worker.
  *
  * Polls OpenSky Network REST API every 12 seconds (free tier safe).
- * Stores position pings in adsb_positions, updates adsb_aircraft_state.
- * Resolves tail numbers from faa_aircraft via icao_hex join.
- * Cleans up positions older than 24 hours every hour.
+ * Stores position pings in adsb_positions (bulk), upserts adsb_aircraft_state
+ * (bulk with COALESCE preservation). Resolves tail numbers from faa_aircraft
+ * via icao_hex join. Cleans up positions older than TTL every hour.
  *
- * Run via: npm run opensky
+ * Auto-started by src/server/index.ts unless ENABLE_OPENSKY=false.
+ * Can also run standalone: npm run opensky.
  */
 
-import type Database from "better-sqlite3";
-import { getDb, closeDb } from "../memory/database.js";
+import { getDatabase, setPgBridge } from "../memory/database.js";
+import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
+import { bulkUpsert } from "../memory/bulk-upsert.js";
 import { haversine } from "../utils/haversine.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -18,25 +20,22 @@ import { haversine } from "../utils/haversine.js";
 const OPENSKY_API = "https://opensky-network.org/api/states/all";
 const POLL_INTERVAL_MS = 12_000;
 const CLEANUP_INTERVAL_MS = 3_600_000;
-const POSITION_TTL_SECONDS = 86_400; // 24 hours
+const FAA_REFRESH_INTERVAL_MS = 3_600_000;
+const POSITION_TTL_SECONDS = 48 * 3600; // 48 h — matches Phase 2 hot tier
 const LOG_EVERY_N_CYCLES = 10;
 
 const US_BBOX = { lamin: 24.4, lamax: 49.4, lomin: -125.0, lomax: -66.9 };
 
-// Conversion factors
 const METERS_TO_FEET = 3.28084;
 const MPS_TO_KNOTS = 1.94384;
 const MPS_TO_FPM = 196.85;
 
-// ── OpenSky response types ─────────────────────────────────────────────────
+// ── OpenSky state-vector column indices ────────────────────────────────────
 
-/** OpenSky state vector — array positions per docs */
 interface OpenSkyResponse {
   time: number;
   states: (string | number | boolean | null)[][] | null;
 }
-
-// state vector indices
 const IDX_ICAO = 0;
 const IDX_CALLSIGN = 1;
 const IDX_LON = 5;
@@ -50,72 +49,108 @@ const IDX_GEO_ALT = 13;
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-interface PositionRow {
-  icao_hex: string;
-  tail_number: string | null;
-  callsign: string | null;
-  latitude: number;
-  longitude: number;
-  altitude_ft: number | null;
-  ground_speed_kts: number | null;
-  heading: number | null;
-  vertical_rate: number | null;
-  on_ground: number;
-  nearest_airport: string | null;
-  timestamp: number;
-}
-
-interface AirportCandidate {
+interface Airport {
   icao_code: string;
   latitude: number;
   longitude: number;
 }
 
-// ── Nearest airport resolver ───────────────────────────────────────────────
+interface FaaRow {
+  type: string | null;
+  cls: string | null;
+  op: string | null;
+  tail: string | null;
+}
 
-function findNearestAirport(
-  db: Database.Database,
+// ── Column definitions ─────────────────────────────────────────────────────
+
+const POSITION_COLS = [
+  "icao_hex", "tail_number", "callsign", "latitude", "longitude",
+  "altitude_ft", "ground_speed_kts", "heading", "vertical_rate",
+  "on_ground", "nearest_airport", "timestamp",
+] as const;
+
+const STATE_COLS = [
+  "icao_hex", "tail_number", "aircraft_type", "aircraft_class", "operator_name",
+  "state", "latitude", "longitude", "nearest_airport", "last_seen", "updated_at",
+] as const;
+
+const STATE_UPDATE_CLAUSE = `
+  tail_number = COALESCE(EXCLUDED.tail_number, adsb_aircraft_state.tail_number),
+  aircraft_type = COALESCE(EXCLUDED.aircraft_type, adsb_aircraft_state.aircraft_type),
+  aircraft_class = COALESCE(EXCLUDED.aircraft_class, adsb_aircraft_state.aircraft_class),
+  operator_name = COALESCE(EXCLUDED.operator_name, adsb_aircraft_state.operator_name),
+  state = EXCLUDED.state,
+  latitude = EXCLUDED.latitude,
+  longitude = EXCLUDED.longitude,
+  nearest_airport = COALESCE(EXCLUDED.nearest_airport, adsb_aircraft_state.nearest_airport),
+  last_seen = EXCLUDED.last_seen,
+  idle_since = CASE
+    WHEN EXCLUDED.state = 'idle' AND adsb_aircraft_state.state <> 'idle' THEN EXCLUDED.last_seen
+    WHEN EXCLUDED.state = 'idle' THEN adsb_aircraft_state.idle_since
+    ELSE NULL
+  END,
+  idle_hours = CASE
+    WHEN EXCLUDED.state = 'idle' AND adsb_aircraft_state.idle_since IS NOT NULL
+      THEN EXTRACT(EPOCH FROM (EXCLUDED.updated_at - adsb_aircraft_state.idle_since::timestamp)) / 3600.0
+    ELSE 0
+  END,
+  updated_at = EXCLUDED.updated_at
+`.trim();
+
+// ── In-memory caches ───────────────────────────────────────────────────────
+
+async function loadAirports(db: DbBridge): Promise<Airport[]> {
+  return await db.prepare(
+    "SELECT icao_code, latitude, longitude FROM faa_airports",
+  ).all() as Airport[];
+}
+
+async function loadIcaoToTail(db: DbBridge): Promise<Map<string, string>> {
+  const rows = await db.prepare(
+    "SELECT icao_hex, tail_number FROM faa_aircraft WHERE icao_hex IS NOT NULL",
+  ).all() as Array<{ icao_hex: string; tail_number: string }>;
+  const map = new Map<string, string>();
+  for (const r of rows) map.set(r.icao_hex.toLowerCase(), r.tail_number);
+  return map;
+}
+
+async function loadFaaLookup(db: DbBridge): Promise<Map<string, FaaRow>> {
+  const rows = await db.prepare(
+    `SELECT icao_hex, tail_number, model, aircraft_class, certificate_holder
+     FROM faa_aircraft WHERE icao_hex IS NOT NULL`,
+  ).all() as Array<{
+    icao_hex: string; tail_number: string | null;
+    model: string | null; aircraft_class: string | null; certificate_holder: string | null;
+  }>;
+  const map = new Map<string, FaaRow>();
+  for (const r of rows) {
+    map.set(r.icao_hex.toLowerCase(), {
+      type: r.model, cls: r.aircraft_class, op: r.certificate_holder, tail: r.tail_number,
+    });
+  }
+  return map;
+}
+
+function findNearestInMemory(
+  airports: Airport[],
   lat: number,
   lon: number,
   maxNm = 15,
 ): string | null {
-  // Bounding box filter: 1 degree ~ 60nm
   const degRange = maxNm / 60;
-  const rows = db
-    .prepare(
-      `SELECT icao_code, latitude, longitude FROM faa_airports
-       WHERE latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?`,
-    )
-    .all(
-      lat - degRange,
-      lat + degRange,
-      lon - degRange,
-      lon + degRange,
-    ) as AirportCandidate[];
-
   let best: string | null = null;
   let bestDist = Infinity;
-  for (const row of rows) {
-    const dist = haversine(lat, lon, row.latitude, row.longitude);
+  for (const ap of airports) {
+    if (Math.abs(ap.latitude - lat) > degRange) continue;
+    if (Math.abs(ap.longitude - lon) > degRange) continue;
+    const dist = haversine(lat, lon, ap.latitude, ap.longitude);
     if (dist < bestDist && dist <= maxNm) {
       bestDist = dist;
-      best = row.icao_code;
+      best = ap.icao_code;
     }
   }
   return best;
-}
-
-// ── Tail number resolution ─────────────────────────────────────────────────
-
-function buildIcaoToTailMap(db: Database.Database): Map<string, string> {
-  const rows = db
-    .prepare("SELECT icao_hex, tail_number FROM faa_aircraft WHERE icao_hex IS NOT NULL")
-    .all() as { icao_hex: string; tail_number: string }[];
-  const map = new Map<string, string>();
-  for (const row of rows) {
-    map.set(row.icao_hex.toLowerCase(), row.tail_number);
-  }
-  return map;
 }
 
 // ── Fetch OpenSky ──────────────────────────────────────────────────────────
@@ -138,65 +173,32 @@ async function fetchStates(): Promise<OpenSkyResponse | null> {
   }
 }
 
-// ── Main ingestion cycle ───────────────────────────────────────────────────
+// ── Ingestion cycle ────────────────────────────────────────────────────────
 
-function ingestCycle(db: Database.Database, icaoToTail: Map<string, string>, data: OpenSkyResponse): number {
+async function ingestCycle(
+  db: DbBridge,
+  data: OpenSkyResponse,
+  airports: Airport[],
+  icaoToTail: Map<string, string>,
+  faaLookup: Map<string, FaaRow>,
+): Promise<number> {
   if (!data.states || data.states.length === 0) return 0;
 
-  const insertPos = db.prepare(
-    `INSERT INTO adsb_positions
-       (icao_hex, tail_number, callsign, latitude, longitude, altitude_ft,
-        ground_speed_kts, heading, vertical_rate, on_ground, nearest_airport, timestamp)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  const nowIso = new Date(nowEpoch * 1000).toISOString();
 
-  const upsertState = db.prepare(
-    `INSERT INTO adsb_aircraft_state
-       (icao_hex, tail_number, aircraft_type, aircraft_class, operator_name,
-        state, latitude, longitude, nearest_airport, last_seen, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-     ON CONFLICT(icao_hex) DO UPDATE SET
-       tail_number = COALESCE(excluded.tail_number, adsb_aircraft_state.tail_number),
-       aircraft_type = COALESCE(excluded.aircraft_type, adsb_aircraft_state.aircraft_type),
-       aircraft_class = COALESCE(excluded.aircraft_class, adsb_aircraft_state.aircraft_class),
-       operator_name = COALESCE(excluded.operator_name, adsb_aircraft_state.operator_name),
-       state = excluded.state,
-       latitude = excluded.latitude,
-       longitude = excluded.longitude,
-       nearest_airport = COALESCE(excluded.nearest_airport, adsb_aircraft_state.nearest_airport),
-       last_seen = datetime('now'),
-       idle_since = CASE
-         WHEN excluded.state = 'idle' AND adsb_aircraft_state.state != 'idle' THEN datetime('now')
-         WHEN excluded.state = 'idle' THEN adsb_aircraft_state.idle_since
-         ELSE NULL
-       END,
-       idle_hours = CASE
-         WHEN excluded.state = 'idle' AND adsb_aircraft_state.idle_since IS NOT NULL
-           THEN (julianday('now') - julianday(adsb_aircraft_state.idle_since)) * 24.0
-         ELSE 0
-       END,
-       updated_at = datetime('now')`,
-  );
-
-  // Pre-load faa_aircraft data for class/type/operator enrichment
-  const faaLookup = new Map<string, { type: string | null; cls: string | null; op: string | null }>();
-  const faaRows = db.prepare("SELECT icao_hex, model, aircraft_class, certificate_holder FROM faa_aircraft WHERE icao_hex IS NOT NULL")
-    .all() as { icao_hex: string; model: string | null; aircraft_class: string | null; certificate_holder: string | null }[];
-  for (const f of faaRows) faaLookup.set(f.icao_hex.toLowerCase(), { type: f.model, cls: f.aircraft_class, op: f.certificate_holder });
-
-  const rows: PositionRow[] = [];
+  const positionRows: unknown[][] = [];
+  const stateRows: unknown[][] = [];
 
   for (const sv of data.states) {
     const icao = sv[IDX_ICAO] as string | null;
     const lat = sv[IDX_LAT] as number | null;
     const lon = sv[IDX_LON] as number | null;
-
-    // Skip entries with missing position or ICAO
     if (!icao || lat == null || lon == null) continue;
 
     const icaoLower = icao.toLowerCase();
     const callsign = (sv[IDX_CALLSIGN] as string | null)?.trim() || null;
-    const onGround = sv[IDX_ON_GROUND] as boolean;
+    const onGround = Boolean(sv[IDX_ON_GROUND]);
     const baroAlt = sv[IDX_BARO_ALT] as number | null;
     const geoAlt = sv[IDX_GEO_ALT] as number | null;
     const velocity = sv[IDX_VELOCITY] as number | null;
@@ -207,129 +209,126 @@ function ingestCycle(db: Database.Database, icaoToTail: Map<string, string>, dat
     const speedKts = velocity != null ? velocity * MPS_TO_KNOTS : null;
     const vertFpm = vertRate != null ? vertRate * MPS_TO_FPM : null;
     const tailNumber = icaoToTail.get(icaoLower) ?? null;
+    const nearestAirport = onGround ? findNearestInMemory(airports, lat, lon) : null;
 
-    // Only resolve nearest airport for on-ground aircraft (expensive per row)
-    const nearestAirport = onGround ? findNearestAirport(db, lat, lon) : null;
+    positionRows.push([
+      icaoLower, tailNumber, callsign, lat, lon, altFt,
+      speedKts, heading, vertFpm, onGround, nearestAirport, data.time,
+    ]);
 
-    rows.push({
-      icao_hex: icaoLower,
-      tail_number: tailNumber,
-      callsign,
-      latitude: lat,
-      longitude: lon,
-      altitude_ft: altFt,
-      ground_speed_kts: speedKts,
-      heading,
-      vertical_rate: vertFpm,
-      on_ground: onGround ? 1 : 0,
-      nearest_airport: nearestAirport,
-      timestamp: data.time,
-    });
+    const faa = faaLookup.get(icaoLower);
+    stateRows.push([
+      icaoLower, tailNumber, faa?.type ?? null, faa?.cls ?? null, faa?.op ?? null,
+      onGround ? "idle" : "airborne", lat, lon, nearestAirport, nowIso, nowIso,
+    ]);
   }
 
-  // Batch insert in a transaction
-  const runBatch = db.transaction(() => {
-    for (const r of rows) {
-      insertPos.run(
-        r.icao_hex, r.tail_number, r.callsign, r.latitude, r.longitude,
-        r.altitude_ft, r.ground_speed_kts, r.heading, r.vertical_rate,
-        r.on_ground, r.nearest_airport, r.timestamp,
-      );
-      const aircraftState = r.on_ground ? "idle" : "airborne";
-      const faa = faaLookup.get(r.icao_hex);
-      upsertState.run(
-        r.icao_hex, r.tail_number, faa?.type ?? null, faa?.cls ?? null, faa?.op ?? null,
-        aircraftState, r.latitude, r.longitude, r.nearest_airport,
-      );
-    }
-  });
-  runBatch();
+  await bulkUpsert(db, "adsb_positions", [...POSITION_COLS], positionRows, []);
+  await bulkUpsert(
+    db, "adsb_aircraft_state", [...STATE_COLS], stateRows,
+    ["icao_hex"], { updateClause: STATE_UPDATE_CLAUSE },
+  );
 
-  return rows.length;
+  return positionRows.length;
 }
 
-// ── Cleanup old positions ──────────────────────────────────────────────────
+// ── Cleanup old positions ─────────────────────────────────────────────────
 
-function cleanupOldPositions(db: Database.Database): number {
+async function cleanupOldPositions(db: DbBridge): Promise<number> {
   const cutoff = Math.floor(Date.now() / 1000) - POSITION_TTL_SECONDS;
-  const result = db.prepare("DELETE FROM adsb_positions WHERE timestamp < ?").run(cutoff);
+  const result = await db.prepare(
+    "DELETE FROM adsb_positions WHERE timestamp < $1",
+  ).run(cutoff) as { changes: number };
   return result.changes;
 }
 
-// ── Worker loop ────────────────────────────────────────────────────────────
+// ── Worker loop ───────────────────────────────────────────────────────────
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
+let faaRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
-/**
- * Start the OpenSky ingestion worker.
- * Can be called from server/index.ts (embedded) or standalone CLI.
- * Returns a stop function for graceful shutdown.
- */
-export async function startWorker(): Promise<() => void> {
+export async function startWorker(): Promise<() => Promise<void>> {
+  if (process.env["DATABASE_TYPE"] !== "postgres") {
+    throw new Error(
+      "opensky-worker requires DATABASE_TYPE=postgres (SQLite path removed in Phase 6)",
+    );
+  }
+  setPgBridge(getPgBridge());
+  const db = getDatabase();
+
   console.log("[opensky] Starting ADS-B ingestion worker...");
-  console.log(`[opensky] Poll interval: ${POLL_INTERVAL_MS / 1000}s | Cleanup: every ${CLEANUP_INTERVAL_MS / 3_600_000}h | TTL: ${POSITION_TTL_SECONDS / 3600}h`);
+  console.log(`[opensky] Poll: ${POLL_INTERVAL_MS / 1000}s | Cleanup: ${CLEANUP_INTERVAL_MS / 3_600_000}h | TTL: ${POSITION_TTL_SECONDS / 3600}h`);
 
-  const db = getDb();
-  const icaoToTail = buildIcaoToTailMap(db);
-  console.log(`[opensky] Loaded ${icaoToTail.size} ICAO→tail mappings from faa_aircraft`);
+  const airports = await loadAirports(db);
+  const icaoToTail = await loadIcaoToTail(db);
+  let faaLookup = await loadFaaLookup(db);
+  console.log(`[opensky] Caches: ${airports.length} airports, ${icaoToTail.size} ICAO→tail, ${faaLookup.size} FAA enrichment`);
 
   let cycle = 0;
   let totalIngested = 0;
 
-  // Poll loop
-  pollTimer = setInterval(async () => {
+  async function runCycle(): Promise<void> {
     cycle++;
     const data = await fetchStates();
-    if (data) {
-      const count = ingestCycle(db, icaoToTail, data);
+    if (!data) return;
+    try {
+      const count = await ingestCycle(db, data, airports, icaoToTail, faaLookup);
       totalIngested += count;
-      if (cycle % LOG_EVERY_N_CYCLES === 0) {
-        const stateCount = (db.prepare("SELECT COUNT(*) as count FROM adsb_aircraft_state").get() as { count: number }).count;
+      if (cycle === 1 || cycle % LOG_EVERY_N_CYCLES === 0) {
+        const stateCountRow = await db.prepare("SELECT COUNT(*) as count FROM adsb_aircraft_state").get() as { count: number | string };
         console.log(
           `[opensky] Cycle ${cycle}: ${count} positions ingested | ` +
-          `${stateCount} aircraft tracked | ${totalIngested} total positions`,
+          `${stateCountRow.count} tracked | ${totalIngested} total`,
         );
       }
+    } catch (err) {
+      console.warn(`[opensky] Cycle ${cycle} error: ${(err as Error).message}`);
     }
-  }, POLL_INTERVAL_MS);
-
-  // Cleanup loop
-  cleanupTimer = setInterval(() => {
-    const deleted = cleanupOldPositions(db);
-    if (deleted > 0) {
-      console.log(`[opensky] Cleaned up ${deleted} positions older than 24h`);
-    }
-  }, CLEANUP_INTERVAL_MS);
-
-  // Run first cycle immediately
-  const data = await fetchStates();
-  if (data) {
-    const count = ingestCycle(db, icaoToTail, data);
-    console.log(`[opensky] Initial fetch: ${count} positions from ${data.states?.length ?? 0} state vectors`);
-  } else {
-    console.warn("[opensky] Initial fetch failed — will retry on next cycle");
   }
 
-  // Return stop function
-  return () => {
+  // Initial cycle
+  await runCycle();
+
+  pollTimer = setInterval(runCycle, POLL_INTERVAL_MS);
+  cleanupTimer = setInterval(async () => {
+    try {
+      const deleted = await cleanupOldPositions(db);
+      if (deleted > 0) console.log(`[opensky] Cleaned up ${deleted} positions older than ${POSITION_TTL_SECONDS / 3600}h`);
+    } catch (err) {
+      console.warn(`[opensky] Cleanup error: ${(err as Error).message}`);
+    }
+  }, CLEANUP_INTERVAL_MS);
+  faaRefreshTimer = setInterval(async () => {
+    try {
+      faaLookup = await loadFaaLookup(db);
+      console.log(`[opensky] FAA cache refreshed: ${faaLookup.size} rows`);
+    } catch (err) {
+      console.warn(`[opensky] FAA refresh error: ${(err as Error).message}`);
+    }
+  }, FAA_REFRESH_INTERVAL_MS);
+
+  return async () => {
     console.log("[opensky] Stopping worker...");
     if (pollTimer) clearInterval(pollTimer);
     if (cleanupTimer) clearInterval(cleanupTimer);
+    if (faaRefreshTimer) clearInterval(faaRefreshTimer);
     pollTimer = null;
     cleanupTimer = null;
+    faaRefreshTimer = null;
+    await closePg();
   };
 }
 
 // ── Standalone CLI entry point ────────────────────────────────────────────
-// Only runs when executed directly (not when imported by server)
 
 const isMainModule = process.argv[1]?.includes("opensky-worker");
 if (isMainModule) {
   startWorker()
     .then((stop) => {
-      process.on("SIGINT", () => { stop(); closeDb(); process.exit(0); });
-      process.on("SIGTERM", () => { stop(); closeDb(); process.exit(0); });
+      const shutdown = async () => { await stop(); process.exit(0); };
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
     })
     .catch((err) => {
       console.error("[opensky] Fatal:", err);
