@@ -1,10 +1,15 @@
 /**
  * ADS-B Historical Backfill — Postgres
  *
- * Downloads daily tars from github.com/adsblol/globe_history_{year} releases,
- * extracts trace files for charter-relevant aircraft (icao_hex in faa_aircraft),
- * parses positions in-memory, detects completed legs, and bulk-inserts them
- * into adsb_completed_legs in Postgres.
+ * Tars are preferentially read from our S3 archive
+ * (s3://osa-dumont-backup/raw/adsb/YYYY/MM/YYYY-MM-DD/). If a day isn't in
+ * S3, falls back to downloading from the adsblol/globe_history_{year}
+ * GitHub release — unless --s3-only is passed, in which case missing-in-S3
+ * days are skipped.
+ *
+ * For each day: extracts trace files for charter-relevant aircraft (icao_hex
+ * in faa_aircraft), parses positions in-memory, detects completed legs, and
+ * bulk-inserts them into adsb_completed_legs in Postgres.
  *
  * Does NOT write positions to adsb_positions — that table has a 48h TTL,
  * so historical timestamps would be deleted immediately. For the full
@@ -12,15 +17,23 @@
  * a future deliverable will run the packager against a historical tar's
  * positions directly. This version only fills the legs gap.
  *
- * Release format: v{date}-planes-readsb-prod-0 with split tar parts (.tar.aa, .tar.ab)
  * Resume-safe: skips days already marked complete in backfill_progress.
  *
- * Usage: npm run backfill:history -- --from 2026-01-01 --to 2026-04-12
+ * Usage:
+ *   npm run backfill:history -- --from 2026-01-01 --to 2026-04-12
+ *   npm run backfill:history -- --from 2026-01-01 --to 2026-04-12 --s3-only
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { join, basename } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
+import {
+  S3Client,
+  ListObjectsV2Command,
+  GetObjectCommand,
+} from "@aws-sdk/client-s3";
 import { getDatabase, setPgBridge } from "../memory/database.js";
 import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
 import {
@@ -35,21 +48,26 @@ import {
   type DetectedLeg,
 } from "./adsblol-ingest.js";
 
+const S3_BUCKET = "osa-dumont-backup";
+const S3_PREFIX = "raw/adsb";
+
 // ── CLI argument parsing ────────────────────────────────────────────────────
 
-function parseArgs(): { from: string; to: string } {
+function parseArgs(): { from: string; to: string; s3Only: boolean } {
   const args = process.argv.slice(2);
   let from = "";
   let to = "";
+  let s3Only = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--from" && args[i + 1]) from = args[i + 1]!;
     if (args[i] === "--to" && args[i + 1]) to = args[i + 1]!;
+    if (args[i] === "--s3-only") s3Only = true;
   }
   if (!from || !to) {
-    console.error("Usage: npm run backfill:history -- --from 2026-01-01 --to 2026-04-12");
+    console.error("Usage: npm run backfill:history -- --from 2026-01-01 --to 2026-04-12 [--s3-only]");
     process.exit(1);
   }
-  return { from, to };
+  return { from, to, s3Only };
 }
 
 // ── Date range generator ────────────────────────────────────────────────────
@@ -75,7 +93,73 @@ async function loadCharterHexSet(db: DbBridge): Promise<Set<string>> {
   return new Set(rows.map((r) => r.icao_hex.toLowerCase()));
 }
 
-// ── GitHub release discovery ────────────────────────────────────────────────
+// ── S3 archive (preferred source) ──────────────────────────────────────────
+
+/** List tar objects under raw/adsb/YYYY/MM/YYYY-MM-DD/ in our S3 archive.
+ *  Returns sorted keys so split parts (.tar.aa, .tar.ab) concatenate in order. */
+async function checkS3HasTars(
+  s3: S3Client,
+  date: string,
+): Promise<{ exists: boolean; keys: string[] }> {
+  const [year, month] = date.split("-") as [string, string];
+  const prefix = `${S3_PREFIX}/${year}/${month}/${date}/`;
+  try {
+    const resp = await s3.send(new ListObjectsV2Command({
+      Bucket: S3_BUCKET,
+      Prefix: prefix,
+    }));
+    const keys = (resp.Contents ?? [])
+      .map((o) => o.Key ?? "")
+      .filter((k) => /\.tar(\.[a-z]+)?$/.test(k))
+      .sort();
+    return { exists: keys.length > 0, keys };
+  } catch (err) {
+    // Permission issue or bucket unavailable — treat as "not in S3" so the
+    // GitHub fallback kicks in (or --s3-only cleanly skips the day).
+    console.warn(`[backfill] S3 list failed for ${date}: ${(err as Error).message}`);
+    return { exists: false, keys: [] };
+  }
+}
+
+async function downloadS3Key(s3: S3Client, key: string, localPath: string): Promise<void> {
+  const r = await s3.send(new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+  if (!r.Body) throw new Error(`empty body for s3://${S3_BUCKET}/${key}`);
+  await pipeline(r.Body as Readable, createWriteStream(localPath));
+}
+
+/** Streaming-download one or more tar parts from S3 and concat into a single
+ *  `.tar` file in `destDir`. Mirrors the output shape of downloadDailyTar()
+ *  so the caller can use the returned path identically. */
+async function downloadDailyTarFromS3(
+  s3: S3Client,
+  date: string,
+  s3Keys: string[],
+  destDir: string,
+): Promise<string> {
+  const tarPath = join(destDir, `${date}.tar`);
+
+  if (s3Keys.length === 1 && s3Keys[0]!.endsWith(".tar")) {
+    const key = s3Keys[0]!;
+    console.log(`[backfill] Downloading s3://${S3_BUCKET}/${key}`);
+    await downloadS3Key(s3, key, tarPath);
+  } else {
+    const partPaths: string[] = [];
+    for (const key of s3Keys) {
+      const partPath = join(destDir, basename(key));
+      console.log(`[backfill] Downloading s3://${S3_BUCKET}/${key}`);
+      await downloadS3Key(s3, key, partPath);
+      partPaths.push(partPath);
+    }
+    console.log(`[backfill] Reassembling ${partPaths.length} parts → ${date}.tar`);
+    const parts = partPaths.map((p) => `"${p}"`).join(" ");
+    execSync(`cat ${parts} > "${tarPath}"`, { timeout: 300_000 });
+    for (const p of partPaths) rmSync(p, { force: true });
+  }
+
+  return tarPath;
+}
+
+// ── GitHub release discovery (fallback) ────────────────────────────────────
 
 interface ReleaseAsset {
   name: string;
@@ -230,20 +314,35 @@ async function markDay(
 
 async function processDay(
   db: DbBridge,
+  s3: S3Client,
   date: string,
   charterHexes: Set<string>,
   airports: Airport[],
   tmpBase: string,
-): Promise<void> {
+  s3Only: boolean,
+): Promise<"processed" | "skipped"> {
   const startTime = Date.now();
   const extractDir = join(tmpBase, date);
   let tarPath = "";
+
+  // 0. Prefer S3; fall back to GitHub unless --s3-only was passed.
+  const s3Check = await checkS3HasTars(s3, date);
+  if (!s3Check.exists && s3Only) {
+    console.log(`[backfill] ${date}: not in S3 and --s3-only set — skipping`);
+    return "skipped";
+  }
 
   await markDay(db, date, "processing");
 
   try {
     // 1. Download daily tar (handles split parts and reassembly)
-    tarPath = downloadDailyTar(date, tmpBase);
+    if (s3Check.exists) {
+      console.log(`[backfill] ${date}: found in S3 (${s3Check.keys.length} object${s3Check.keys.length === 1 ? "" : "s"}), using archive`);
+      tarPath = await downloadDailyTarFromS3(s3, date, s3Check.keys, tmpBase);
+    } else {
+      console.log(`[backfill] ${date}: not in S3, downloading from GitHub`);
+      tarPath = downloadDailyTar(date, tmpBase);
+    }
 
     // 2. Extract
     console.log(`[backfill] ${date}: Extracting tar...`);
@@ -307,10 +406,12 @@ async function processDay(
       `[backfill] ${date}: done | ${totalLegs} legs (${charterLegCount} charter) | ` +
       `${stats.usAircraft} aircraft | ${stats.errors} errors | ${durationSec}s`,
     );
+    return "processed";
   } catch (err) {
     const durationSec = Math.round((Date.now() - startTime) / 1000);
     await markDay(db, date, "failed", 0, 0, durationSec);
     console.error(`[backfill] ${date}: FAILED —`, err instanceof Error ? err.message : err);
+    return "processed";  // processed-with-failure; still counts as "not-skipped"
   } finally {
     if (tarPath && existsSync(tarPath)) rmSync(tarPath, { force: true });
     if (existsSync(extractDir)) rmSync(extractDir, { recursive: true, force: true });
@@ -327,11 +428,13 @@ async function main(): Promise<void> {
   }
   setPgBridge(getPgBridge());
   const db = getDatabase();
+  const s3 = new S3Client({});
 
-  const { from, to } = parseArgs();
+  const { from, to, s3Only } = parseArgs();
   const dates = dateRange(from, to);
 
   console.log(`[backfill] ADS-B historical backfill: ${from} -> ${to} (${dates.length} days)`);
+  console.log(`[backfill] Source: S3 preferred${s3Only ? " (--s3-only: no GitHub fallback)" : ", GitHub fallback"}`);
 
   const charterHexes = await loadCharterHexSet(db);
   console.log(`[backfill] Loaded ${charterHexes.size} charter-relevant ICAO hex codes from faa_aircraft`);
@@ -357,8 +460,9 @@ async function main(): Promise<void> {
       skipped++;
       continue;
     }
-    await processDay(db, date, charterHexes, airports, tmpBase);
-    completed++;
+    const outcome = await processDay(db, s3, date, charterHexes, airports, tmpBase, s3Only);
+    if (outcome === "skipped") skipped++;
+    else completed++;
   }
 
   if (existsSync(tmpBase)) rmSync(tmpBase, { recursive: true, force: true });
