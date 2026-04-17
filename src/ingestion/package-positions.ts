@@ -24,6 +24,7 @@ import { execSync } from "node:child_process";
 import path from "node:path";
 import pg from "pg";
 import Cursor from "pg-cursor";
+import { createStandaloneClient } from "../memory/pg-database.js";
 import { S3Client, PutObjectCommand, type StorageClass } from "@aws-sdk/client-s3";
 import parquet from "@dsnp/parquetjs";
 import { childLogger } from "../utils/logger.js";
@@ -162,9 +163,7 @@ interface FaaMeta {
 // ── Postgres ───────────────────────────────────────────────────────────────
 
 async function connectPg(): Promise<pg.Client> {
-  const url = process.env["SUPABASE_DATABASE_URL"];
-  if (!url) throw new Error("SUPABASE_DATABASE_URL not set");
-  const client = new pg.Client({ connectionString: url, ssl: { rejectUnauthorized: false } });
+  const client = createStandaloneClient();
   await client.connect();
   return client;
 }

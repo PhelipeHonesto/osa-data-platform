@@ -25,6 +25,7 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import pg from "pg";
+import { createStandaloneClient } from "../memory/pg-database.js";
 import {
   S3Client,
   GetObjectCommand,
@@ -134,9 +135,7 @@ function endPhase(p: { name: string; start: number }, stats: Record<string, numb
 // ── Postgres ───────────────────────────────────────────────────────────────
 
 async function connectPg(): Promise<pg.Client> {
-  const url = process.env["SUPABASE_DATABASE_URL"];
-  if (!url) throw new Error("SUPABASE_DATABASE_URL not set");
-  const c = new pg.Client({ connectionString: url, ssl: { rejectUnauthorized: false } });
+  const c = createStandaloneClient();
   await c.connect();
   return c;
 }

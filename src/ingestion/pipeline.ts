@@ -22,7 +22,7 @@
 
 import { execSync } from "node:child_process";
 import { resolve } from "node:path";
-import pg from "pg";
+import { createStandaloneClient } from "../memory/pg-database.js";
 import { childLogger } from "../utils/logger.js";
 import { initSentry } from "../utils/sentry.js";
 
@@ -105,9 +105,7 @@ async function main(): Promise<void> {
   console.log(`║  Started: ${pipelineStart}                ║`);
   console.log(`╚${"═".repeat(58)}╝`);
 
-  const pgUrl = process.env["SUPABASE_DATABASE_URL"];
-  if (!pgUrl) throw new Error("SUPABASE_DATABASE_URL not set");
-  const pgClient = new pg.Client({ connectionString: pgUrl, ssl: { rejectUnauthorized: false } });
+  const pgClient = createStandaloneClient();
   await pgClient.connect();
 
   // Insert pipeline_runs row (status = 'running'), capture id via RETURNING
