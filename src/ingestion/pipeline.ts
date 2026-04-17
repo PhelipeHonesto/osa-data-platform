@@ -167,8 +167,8 @@ async function main(): Promise<void> {
   }
 
   // ── Step 4: Propagate Safety Ratings ───────────────────────────────────
-  //    update-graph.mjs now self-heals safety scores, but we also run the
-  //    full safety ingestion as belt-and-suspenders to catch any new ratings.
+  //    update-graph self-heals safety scores, but we also run the full
+  //    safety ingestion as belt-and-suspenders to catch any new ratings.
   if (!failedStep) {
     const step4 = runStep(
       "Propagate Safety Ratings",
@@ -227,8 +227,7 @@ async function main(): Promise<void> {
   );
   stats.aircraftClassified = (classifiedRow.rows[0] as { cnt: number }).cnt;
 
-  // Knowledge graph stats — table exists in PG; may be stale by one run if the
-  // .mjs scripts (Tier 3) haven't migrated yet.
+  // Knowledge graph stats — populated by update-graph (Step 3 above).
   try {
     const graphStats = await pgClient.query(`
       SELECT
