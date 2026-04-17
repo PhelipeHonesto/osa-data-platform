@@ -157,13 +157,19 @@ export function downsampleTrace(data: TraceFile): DownsampledPoint[] {
     const lon = point[2] as number | null;
     if (lat == null || lon == null) continue;
 
-    const altFt = point[3] as number | null;
+    // adsb.lol encodes alt as either a number (ft) or the string "ground"
+    // when the aircraft is reported stationary on the field. Treat "ground"
+    // as onGround=true regardless of speed (a plane taxiing at 19 kts is
+    // still on the ground).
+    const rawAlt = point[3] as number | string | null;
+    const altIsGroundString = rawAlt === "ground";
+    const altFt: number | null = typeof rawAlt === "number" ? rawAlt : null;
     const speedKts = point[4] as number | null;
     const track = point[5] as number | null;
     const vertRate = point[7] as number | null;
 
-    // On-ground heuristic: low altitude + low speed
-    const onGround = (altFt != null && altFt <= 500) && (speedKts == null || speedKts < 60);
+    const onGround = altIsGroundString
+      || ((altFt != null && altFt <= 500) && (speedKts == null || speedKts < 60));
 
     // Keep point if:
     // - Ground state changed (airborne <-> ground transition)
@@ -224,8 +230,20 @@ export function parseTraceFile(filePath: string, stats: IngestStats): ParsedTrac
 // ── In-memory leg detection ─────────────────────────────────────────────────
 
 /** Scan a single aircraft's downsampled points and emit completed legs
- *  (taxi-outs under 5 minutes are filtered out). Mirrors the old
- *  position-backed detection logic but operates entirely in memory. */
+ *  (taxi-outs under 5 minutes are filtered out).
+ *
+ *  wasGround is tri-state:
+ *    - null   → unknown (start of trace; aircraft may be mid-flight)
+ *    - true   → last seen confirmed on ground
+ *    - false  → last seen confirmed airborne
+ *
+ *  A legStart is only emitted on a confirmed ground→airborne transition
+ *  (wasGround === true && !p.onGround). If the trace begins while the
+ *  aircraft is already airborne (common for flights that cross UTC
+ *  midnight in the daily globe-history tars), no fake takeoff is emitted
+ *  at `data.timestamp + 0` — we simply wait for the first real takeoff
+ *  later in the trace. This is the fix for Phase 7's timestamp bug.
+ */
 export function detectLegs(
   parsed: ParsedTrace,
   airports: Airport[],
@@ -234,13 +252,13 @@ export function detectLegs(
   const { data, aircraftClass, points } = parsed;
 
   let legStart: { lat: number; lon: number; ts: number } | null = null;
-  let wasGround = true;
+  let wasGround: boolean | null = null;
 
   for (const p of points) {
     const ts = data.timestamp + p.offsetSec;
-    if (wasGround && !p.onGround && !legStart) {
+    if (wasGround === true && !p.onGround && !legStart) {
       legStart = { lat: p.lat, lon: p.lon, ts };
-    } else if (!wasGround && p.onGround && legStart) {
+    } else if (wasGround === false && p.onGround && legStart) {
       const flightTimeMin = Math.round((ts - legStart.ts) / 60);
       if (flightTimeMin >= 5) {
         const distNm = haversine(legStart.lat, legStart.lon, p.lat, p.lon);
