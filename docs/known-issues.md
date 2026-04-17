@@ -24,6 +24,12 @@ When building features that need clean legs:
 2. DELETE FROM adsb_completed_legs + reset backfill_progress
 3. Re-run history-backfill with --s3-only flag (code ready)
 
+Runbook: `docs/phase7-rebuild-runbook.md`. Pre-flight + automated
+verification (`scripts/phase7-preflight.ts`, `scripts/phase7-verify.ts`)
+persists results to `data_quality_runs` and alerts via Sentry on any
+failed threshold. Contamination flag in this file will be removed
+after a clean 7/7 verify pass.
+
 **What's safe to use in the meantime:**
 - adsb_aircraft_state (computed by live feed, not affected)
 - adsb_positions (hot tier, fresh data only)
