@@ -1,11 +1,14 @@
 /**
- * adsb.lol Historical Data Ingestion
+ * adsb.lol Historical Data Parser
  *
- * Parses globe_history trace files into SQLite:
- * - faa_aircraft (upsert with icao_hex, type, operator)
- * - adsb_positions (downsampled positions)
- * - adsb_aircraft_state (final state per aircraft)
- * - adsb_completed_legs (materialized flight legs)
+ * Parses globe_history trace files into in-memory structures.
+ * Used by src/ingestion/history-backfill.ts; also runnable standalone to ingest
+ * a local traces directory directly into Postgres.
+ *
+ * After Phase 6 migration, positions are NOT written to the hot tier
+ * (adsb_positions has a 48h TTL that would immediately delete historical
+ * data). Legs are detected in-memory per aircraft and written to
+ * adsb_completed_legs. aircraft_class discovery writes to faa_aircraft.
  *
  * Usage: npm run ingest:history /tmp/adsb-history/traces
  */
@@ -13,8 +16,9 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
-import type Database from "better-sqlite3";
-import { getDb, closeDb } from "../memory/database.js";
+import { getDatabase, setPgBridge } from "../memory/database.js";
+import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
+import { bulkUpsert } from "../memory/bulk-upsert.js";
 import { haversine } from "../utils/haversine.js";
 
 // ── ICAO Type Code → Aircraft Class mapping ─────────────────────────────────
@@ -61,7 +65,7 @@ export interface TraceFile {
   trace: (number | null | object | string)[][];
 }
 
-interface DownsampledPoint {
+export interface DownsampledPoint {
   offsetSec: number;
   lat: number;
   lon: number;
@@ -83,40 +87,58 @@ export interface IngestStats {
   errors: number;
 }
 
-interface AirportCandidate {
+export interface Airport {
   icao_code: string;
   latitude: number;
   longitude: number;
 }
 
-// ── Nearest airport resolver (same pattern as opensky-worker.ts) ─────────────
+export interface ParsedTrace {
+  data: TraceFile;
+  aircraftClass: string | null;
+  points: DownsampledPoint[];
+}
 
-export function findNearestAirport(
-  db: Database.Database,
+export interface DetectedLeg {
+  icao: string;
+  tail: string;
+  operator: string | null;
+  aircraftType: string | null;
+  aircraftClass: string | null;
+  originIcao: string | null;
+  destIcao: string | null;
+  departureTime: string;
+  arrivalTime: string;
+  flightTimeMin: number;
+  distanceNm: number;
+}
+
+// ── Airport index (in-memory for fast haversine lookup) ─────────────────────
+
+export async function loadAirports(db: DbBridge): Promise<Airport[]> {
+  return await db.prepare(
+    `SELECT icao_code, latitude, longitude FROM faa_airports`,
+  ).all() as Airport[];
+}
+
+/** In-memory nearest-airport lookup. Beats per-row SQL by ~1000x for bulk
+ *  leg materialization. */
+export function findNearestInMemory(
+  airports: Airport[],
   lat: number,
   lon: number,
   maxNm = 15,
 ): string | null {
   const degRange = maxNm / 60;
-  const rows = db
-    .prepare(
-      `SELECT icao_code, latitude, longitude FROM faa_airports
-       WHERE latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?`,
-    )
-    .all(
-      lat - degRange,
-      lat + degRange,
-      lon - degRange,
-      lon + degRange,
-    ) as AirportCandidate[];
-
   let best: string | null = null;
   let bestDist = Infinity;
-  for (const row of rows) {
-    const dist = haversine(lat, lon, row.latitude, row.longitude);
+  for (const ap of airports) {
+    if (Math.abs(ap.latitude - lat) > degRange) continue;
+    if (Math.abs(ap.longitude - lon) > degRange) continue;
+    const dist = haversine(lat, lon, ap.latitude, ap.longitude);
     if (dist < bestDist && dist <= maxNm) {
       bestDist = dist;
-      best = row.icao_code;
+      best = ap.icao_code;
     }
   }
   return best;
@@ -161,197 +183,158 @@ export function downsampleTrace(data: TraceFile): DownsampledPoint[] {
   return result;
 }
 
-// ── Batch insert positions ───────────────────────────────────────────────────
+// ── Parse one trace file (no DB writes) ─────────────────────────────────────
 
-export function insertPositions(
-  db: Database.Database,
-  icaoHex: string,
-  tailNumber: string,
-  points: DownsampledPoint[],
-  baseTimestamp: number,
-): void {
-  const insert = db.prepare(`
-    INSERT INTO adsb_positions
-    (icao_hex, tail_number, latitude, longitude, altitude_ft, ground_speed_kts,
-     heading, vertical_rate, on_ground, timestamp)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  for (const p of points) {
-    insert.run(
-      icaoHex, tailNumber, p.lat, p.lon, p.altFt, p.speedKts,
-      p.track, p.vertRate, p.onGround ? 1 : 0,
-      Math.round(baseTimestamp + p.offsetSec),
-    );
-  }
-}
-
-// ── Upsert aircraft ──────────────────────────────────────────────────────────
-
-export function upsertAircraft(db: Database.Database, data: TraceFile, aircraftClass: string | null): void {
-  db.prepare(`
-    INSERT OR REPLACE INTO faa_aircraft
-    (tail_number, icao_hex, model, common_name, aircraft_class,
-     year_manufactured, certificate_holder, status, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', datetime('now'))
-  `).run(
-    data.r, data.icao, data.t ?? null, data.desc ?? null,
-    aircraftClass, data.year ? parseInt(data.year, 10) : null,
-    data.ownOp ?? null,
-  );
-}
-
-// ── Process a single trace file ──────────────────────────────────────────────
-
-export function processFile(filePath: string, db: Database.Database, stats: IngestStats): void {
-  // 1. Read and decompress
+/** Read + decompress + filter + downsample a single trace_full_*.json.gz file.
+ *  Returns null for non-US aircraft (same filter as the pre-Phase-6 version).
+ *  No DB writes — the caller accumulates and bulk-writes. */
+export function parseTraceFile(filePath: string, stats: IngestStats): ParsedTrace | null {
   const raw = readFileSync(filePath);
-  const json = gunzipSync(raw).toString("utf-8");
+  let json: string;
+  try {
+    json = gunzipSync(raw).toString("utf-8");
+  } catch {
+    // Some trace files are stored uncompressed — fall back to raw UTF-8.
+    json = raw.toString("utf-8");
+  }
   const data: TraceFile = JSON.parse(json);
 
-  // 2. Filter: only US aircraft with registration
+  // Filter: only US aircraft with registration
   if (!data.r || !data.r.startsWith("N")) {
     stats.skippedNonUS++;
-    return;
+    return null;
   }
 
   stats.usAircraft++;
 
-  // 3. Upsert faa_aircraft
   const aircraftClass = data.t ? (ICAO_TYPE_CLASS[data.t] ?? null) : null;
-  upsertAircraft(db, data, aircraftClass);
-
-  // 4. Downsample and ingest positions
-  const positions = downsampleTrace(data);
-  insertPositions(db, data.icao, data.r, positions, data.timestamp);
-  stats.positionsIngested += positions.length;
+  const points = downsampleTrace(data);
+  stats.positionsIngested += points.length;
   stats.positionsRaw += data.trace.length;
 
-  // 5. Track class counts
   if (aircraftClass) {
     stats.classCounts[aircraftClass] = (stats.classCounts[aircraftClass] ?? 0) + 1;
   } else {
     stats.unmatchedTypes.set(data.t ?? "unknown", (stats.unmatchedTypes.get(data.t ?? "unknown") ?? 0) + 1);
   }
+
+  return { data, aircraftClass, points };
 }
 
-// ── Leg materialization ──────────────────────────────────────────────────────
+// ── In-memory leg detection ─────────────────────────────────────────────────
 
-function materializeLegs(db: Database.Database): number {
-  const aircraft = db.prepare(`
-    SELECT DISTINCT p.icao_hex, p.tail_number,
-      a.model as aircraft_type, a.aircraft_class, a.certificate_holder as operator_name
-    FROM adsb_positions p
-    LEFT JOIN faa_aircraft a ON a.icao_hex = p.icao_hex
-    WHERE p.tail_number IS NOT NULL
-  `).all() as { icao_hex: string; tail_number: string; aircraft_type: string | null; aircraft_class: string | null; operator_name: string | null }[];
+/** Scan a single aircraft's downsampled points and emit completed legs
+ *  (taxi-outs under 5 minutes are filtered out). Mirrors the old
+ *  position-backed detection logic but operates entirely in memory. */
+export function detectLegs(
+  parsed: ParsedTrace,
+  airports: Airport[],
+): DetectedLeg[] {
+  const legs: DetectedLeg[] = [];
+  const { data, aircraftClass, points } = parsed;
 
-  const insertLeg = db.prepare(`
-    INSERT INTO adsb_completed_legs
-    (icao_hex, tail_number, operator_name, aircraft_type, aircraft_class,
-     origin_icao, destination_icao, departure_time, arrival_time, flight_time_min, distance_nm)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+  let legStart: { lat: number; lon: number; ts: number } | null = null;
+  let wasGround = true;
 
-  let legCount = 0;
-
-  for (const ac of aircraft) {
-    const positions = db.prepare(
-      "SELECT latitude, longitude, altitude_ft, on_ground, timestamp FROM adsb_positions WHERE icao_hex = ? ORDER BY timestamp",
-    ).all(ac.icao_hex) as { latitude: number; longitude: number; altitude_ft: number | null; on_ground: number; timestamp: number }[];
-
-    // Find legs: sequence of airborne points between ground points
-    let legStart: { lat: number; lon: number; ts: number } | null = null;
-    let wasGround = true;
-
-    for (const pos of positions) {
-      const isGround = pos.on_ground === 1;
-
-      if (wasGround && !isGround && !legStart) {
-        // Takeoff detected
-        legStart = { lat: pos.latitude, lon: pos.longitude, ts: pos.timestamp };
-      } else if (!wasGround && isGround && legStart) {
-        // Landing detected
-        const flightTimeMin = Math.round((pos.timestamp - legStart.ts) / 60);
-
-        // Only count legs > 5 minutes (filter taxi movements)
-        if (flightTimeMin >= 5) {
-          const distNm = haversine(legStart.lat, legStart.lon, pos.latitude, pos.longitude);
-          const originIcao = findNearestAirport(db, legStart.lat, legStart.lon) ?? null;
-          const destIcao = findNearestAirport(db, pos.latitude, pos.longitude) ?? null;
-          const depTime = new Date(legStart.ts * 1000).toISOString();
-          const arrTime = new Date(pos.timestamp * 1000).toISOString();
-
-          insertLeg.run(ac.icao_hex, ac.tail_number, ac.operator_name, ac.aircraft_type, ac.aircraft_class, originIcao, destIcao, depTime, arrTime, flightTimeMin, Math.round(distNm));
-          legCount++;
-        }
-        legStart = null;
+  for (const p of points) {
+    const ts = data.timestamp + p.offsetSec;
+    if (wasGround && !p.onGround && !legStart) {
+      legStart = { lat: p.lat, lon: p.lon, ts };
+    } else if (!wasGround && p.onGround && legStart) {
+      const flightTimeMin = Math.round((ts - legStart.ts) / 60);
+      if (flightTimeMin >= 5) {
+        const distNm = haversine(legStart.lat, legStart.lon, p.lat, p.lon);
+        legs.push({
+          icao: data.icao.toLowerCase(),
+          tail: data.r ?? "",
+          operator: data.ownOp ?? null,
+          aircraftType: data.t ?? null,
+          aircraftClass,
+          originIcao: findNearestInMemory(airports, legStart.lat, legStart.lon),
+          destIcao: findNearestInMemory(airports, p.lat, p.lon),
+          departureTime: new Date(legStart.ts * 1000).toISOString(),
+          arrivalTime: new Date(ts * 1000).toISOString(),
+          flightTimeMin,
+          distanceNm: Math.round(distNm),
+        });
       }
-
-      wasGround = isGround;
+      legStart = null;
     }
+    wasGround = p.onGround;
   }
-
-  return legCount;
+  return legs;
 }
 
-// ── Aircraft state computation ───────────────────────────────────────────────
+// ── Bulk writers ────────────────────────────────────────────────────────────
 
-function computeAircraftStates(db: Database.Database): number {
-  const latest = db.prepare(`
-    SELECT p.icao_hex, p.tail_number, p.latitude, p.longitude, p.altitude_ft,
-           p.on_ground, p.timestamp,
-           a.model as aircraft_type, a.aircraft_class, a.certificate_holder
-    FROM adsb_positions p
-    LEFT JOIN faa_aircraft a ON a.icao_hex = p.icao_hex
-    WHERE p.timestamp = (SELECT MAX(p2.timestamp) FROM adsb_positions p2 WHERE p2.icao_hex = p.icao_hex)
-    GROUP BY p.icao_hex
-  `).all() as {
-    icao_hex: string;
-    tail_number: string | null;
-    latitude: number;
-    longitude: number;
-    altitude_ft: number | null;
-    on_ground: number;
-    timestamp: number;
-    aircraft_type: string | null;
-    aircraft_class: string | null;
-    certificate_holder: string | null;
-  }[];
+const LEG_COLS = [
+  "icao_hex", "tail_number", "operator_name", "aircraft_type", "aircraft_class",
+  "origin_icao", "destination_icao", "departure_time", "arrival_time",
+  "flight_time_min", "distance_nm",
+] as const;
 
-  const upsert = db.prepare(`
-    INSERT OR REPLACE INTO adsb_aircraft_state
-    (icao_hex, tail_number, operator_name, aircraft_type, aircraft_class,
-     state, latitude, longitude, nearest_airport,
-     idle_since, idle_hours, last_seen, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-  `);
-
-  let count = 0;
-  const batch = db.transaction((rows: typeof latest) => {
-    for (const r of rows) {
-      const isGround = r.on_ground === 1;
-      const state = isGround ? "idle_transient" : "airborne";
-      const nearestAirport = isGround ? findNearestAirport(db, r.latitude, r.longitude) : null;
-      const lastSeen = new Date(r.timestamp * 1000).toISOString();
-      const idleSince = isGround ? lastSeen : null;
-      const idleHours = 0; // Will be computed by the live worker
-
-      upsert.run(
-        r.icao_hex, r.tail_number, r.certificate_holder, r.aircraft_type, r.aircraft_class,
-        state, r.latitude, r.longitude, nearestAirport,
-        idleSince, idleHours, lastSeen,
-      );
-      count++;
-    }
-  });
-  batch(latest);
-  return count;
+export async function bulkInsertLegs(db: DbBridge, legs: DetectedLeg[]): Promise<void> {
+  if (legs.length === 0) return;
+  const rows = legs.map((l) => [
+    l.icao, l.tail, l.operator, l.aircraftType, l.aircraftClass,
+    l.originIcao, l.destIcao, l.departureTime, l.arrivalTime,
+    l.flightTimeMin, l.distanceNm,
+  ]);
+  await bulkUpsert(db, "adsb_completed_legs", [...LEG_COLS], rows, []);
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+const AIRCRAFT_COLS = [
+  "tail_number", "icao_hex", "model", "common_name", "aircraft_class",
+  "year_manufactured", "certificate_holder", "status", "updated_at",
+] as const;
 
-async function main() {
+const AIRCRAFT_UPDATE_CLAUSE = `
+  icao_hex = COALESCE(EXCLUDED.icao_hex, faa_aircraft.icao_hex),
+  model = COALESCE(EXCLUDED.model, faa_aircraft.model),
+  common_name = COALESCE(EXCLUDED.common_name, faa_aircraft.common_name),
+  aircraft_class = COALESCE(EXCLUDED.aircraft_class, faa_aircraft.aircraft_class),
+  year_manufactured = COALESCE(EXCLUDED.year_manufactured, faa_aircraft.year_manufactured),
+  certificate_holder = COALESCE(EXCLUDED.certificate_holder, faa_aircraft.certificate_holder),
+  status = EXCLUDED.status,
+  updated_at = EXCLUDED.updated_at
+`.trim();
+
+/** Upsert aircraft discovered from traces. Preserves existing data where the
+ *  trace file doesn't have a value (via COALESCE). */
+export async function bulkUpsertAircraft(
+  db: DbBridge,
+  parses: ParsedTrace[],
+): Promise<void> {
+  if (parses.length === 0) return;
+  const now = new Date().toISOString();
+  const rows = parses
+    .filter((p) => p.data.r) // must have tail (PK)
+    .map((p) => [
+      p.data.r ?? "",
+      p.data.icao.toLowerCase(),
+      p.data.t ?? null,
+      p.data.desc ?? null,
+      p.aircraftClass,
+      p.data.year ? parseInt(p.data.year, 10) : null,
+      p.data.ownOp ?? null,
+      "active",
+      now,
+    ]);
+  await bulkUpsert(db, "faa_aircraft", [...AIRCRAFT_COLS], rows,
+    ["tail_number"], { updateClause: AIRCRAFT_UPDATE_CLAUSE });
+}
+
+// ── Main (standalone) ───────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  if (process.env["DATABASE_TYPE"] !== "postgres") {
+    throw new Error(
+      "adsblol-ingest requires DATABASE_TYPE=postgres (SQLite path removed in Phase 6)",
+    );
+  }
+  setPgBridge(getPgBridge());
+  const db = getDatabase();
+
   const tracesDir = process.argv[2];
   if (!tracesDir) {
     console.error("Usage: npm run ingest:history <traces-dir>");
@@ -359,7 +342,8 @@ async function main() {
   }
 
   console.log(`[adsblol] Starting ingestion from ${tracesDir}`);
-  const db = getDb();
+  const airports = await loadAirports(db);
+  console.log(`[adsblol] Loaded ${airports.length} airports`);
 
   // Find all trace files
   const files: string[] = [];
@@ -368,7 +352,7 @@ async function main() {
     const subPath = join(tracesDir, sub);
     if (!statSync(subPath).isDirectory()) continue;
     for (const file of readdirSync(subPath)) {
-      if (file.startsWith("trace_full_") && file.endsWith(".json")) {
+      if (file.startsWith("trace_full_") && (file.endsWith(".json") || file.endsWith(".json.gz"))) {
         files.push(join(subPath, file));
       }
     }
@@ -376,85 +360,58 @@ async function main() {
   console.log(`[adsblol] Found ${files.length} trace files`);
 
   const stats: IngestStats = {
-    processed: 0,
-    skippedNonUS: 0,
-    usAircraft: 0,
-    positionsIngested: 0,
-    positionsRaw: 0,
+    processed: 0, skippedNonUS: 0, usAircraft: 0,
+    positionsIngested: 0, positionsRaw: 0,
     classCounts: {},
     unmatchedTypes: new Map<string, number>(),
     errors: 0,
   };
 
-  // Process in transaction batches of 100 files
-  const BATCH_SIZE = 100;
-  for (let i = 0; i < files.length; i += BATCH_SIZE) {
-    const batch = files.slice(i, i + BATCH_SIZE);
-    const runBatch = db.transaction(() => {
-      for (const file of batch) {
-        try {
-          processFile(file, db, stats);
-        } catch (_err) {
-          stats.errors++;
-        }
-        stats.processed++;
-      }
-    });
-    runBatch();
+  // Process in chunks: parse + detect legs in-memory, then bulk-flush.
+  const CHUNK = 500;
+  let totalLegs = 0;
+  for (let i = 0; i < files.length; i += CHUNK) {
+    const chunk = files.slice(i, i + CHUNK);
+    const parsedBatch: ParsedTrace[] = [];
+    const legBatch: DetectedLeg[] = [];
 
-    if ((i + BATCH_SIZE) % 1000 === 0 || i + BATCH_SIZE >= files.length) {
-      console.log(`[adsblol] Progress: ${stats.processed}/${files.length} files | ${stats.usAircraft} US aircraft | ${stats.positionsIngested} positions`);
+    for (const file of chunk) {
+      try {
+        const p = parseTraceFile(file, stats);
+        if (!p) { stats.processed++; continue; }
+        parsedBatch.push(p);
+        for (const leg of detectLegs(p, airports)) legBatch.push(leg);
+      } catch {
+        stats.errors++;
+      }
+      stats.processed++;
+    }
+
+    await bulkUpsertAircraft(db, parsedBatch);
+    await bulkInsertLegs(db, legBatch);
+    totalLegs += legBatch.length;
+
+    if ((i + CHUNK) % 5000 === 0 || i + CHUNK >= files.length) {
+      console.log(`[adsblol] Progress: ${stats.processed}/${files.length} files | ${stats.usAircraft} US aircraft | ${totalLegs} legs so far`);
     }
   }
 
-  // Compute aircraft states
-  console.log("[adsblol] Computing aircraft states...");
-  const stateCount = computeAircraftStates(db);
-
-  // Materialize completed legs
-  console.log("[adsblol] Materializing completed legs...");
-  const legCount = db.transaction(() => materializeLegs(db))();
-
-  // Print summary
   console.log("\n═══════════════════════════════════════════");
   console.log("ADS-B Historical Ingestion Complete");
   console.log("═══════════════════════════════════════════");
   console.log(`Files processed: ${stats.processed} / ${files.length}`);
-  console.log(`US aircraft found: ${stats.usAircraft}`);
-  console.log(`Positions ingested: ${stats.positionsIngested.toLocaleString()} (downsampled from ${stats.positionsRaw.toLocaleString()})`);
-  console.log(`Aircraft states: ${stateCount}`);
-  console.log(`Completed legs: ${legCount}`);
-  console.log(`Errors: ${stats.errors}`);
+  console.log(`US aircraft:     ${stats.usAircraft}`);
+  console.log(`Downsampled:     ${stats.positionsIngested.toLocaleString()} points (from ${stats.positionsRaw.toLocaleString()} raw)`);
+  console.log(`Completed legs:  ${totalLegs}`);
+  console.log(`Errors:          ${stats.errors}`);
   console.log(`\nCharter-class aircraft:`);
   for (const [cls, count] of Object.entries(stats.classCounts).sort((a, b) => b[1] - a[1])) {
     console.log(`  ${cls}: ${count}`);
   }
-  if (stats.unmatchedTypes.size > 0) {
-    console.log(`\nTop 20 unmatched type codes:`);
-    const sorted = [...stats.unmatchedTypes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
-    for (const [type, count] of sorted) {
-      console.log(`  ${type}: ${count}`);
-    }
-  }
 
-  // Top airports
-  const topAirports = db.prepare(`
-    SELECT origin_icao as airport, COUNT(*) as departures
-    FROM adsb_completed_legs
-    WHERE origin_icao IS NOT NULL
-    GROUP BY origin_icao ORDER BY departures DESC LIMIT 10
-  `).all() as { airport: string; departures: number }[];
-  if (topAirports.length > 0) {
-    console.log(`\nTop 10 airports by charter departures:`);
-    for (const a of topAirports) {
-      console.log(`  ${a.airport}: ${a.departures} departures`);
-    }
-  }
-
-  closeDb();
+  await closePg();
 }
 
-// Only run main when invoked directly (not when imported)
 const isDirectRun = process.argv[1]?.endsWith("adsblol-ingest.ts") || process.argv[1]?.endsWith("adsblol-ingest.js");
 if (isDirectRun) {
   main().catch((err) => {
