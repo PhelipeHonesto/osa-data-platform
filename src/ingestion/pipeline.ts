@@ -24,7 +24,9 @@ import { execSync } from "node:child_process";
 import { resolve } from "node:path";
 import pg from "pg";
 import { childLogger } from "../utils/logger.js";
+import { initSentry } from "../utils/sentry.js";
 
+initSentry();
 const log = childLogger("pipeline");
 
 // ── Types ──────────────────────────────────────────────────────────────────

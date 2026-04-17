@@ -15,8 +15,19 @@ import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
 import { bulkUpsert } from "../memory/bulk-upsert.js";
 import { haversine } from "../utils/haversine.js";
 import { childLogger } from "../utils/logger.js";
+import { initSentry, flushSentry } from "../utils/sentry.js";
 
+initSentry();
 const log = childLogger("opensky");
+
+process.on("uncaughtException", (err) => {
+  log.fatal({ err }, "uncaught exception");
+  void flushSentry().finally(() => setTimeout(() => process.exit(1), 200));
+});
+process.on("unhandledRejection", (reason) => {
+  log.fatal({ err: reason }, "unhandled rejection");
+  void flushSentry().finally(() => setTimeout(() => process.exit(1), 200));
+});
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -329,6 +340,13 @@ export async function startWorker(): Promise<() => Promise<void>> {
 
 const isMainModule = process.argv[1]?.includes("opensky-worker");
 if (isMainModule) {
+  // --test-sentry: emit one error event and exit. Used to verify the
+  // Sentry bridge end-to-end from a local shell before deploying.
+  if (process.argv.includes("--test-sentry")) {
+    const testLog = childLogger("sentry-test");
+    testLog.error({ err: new Error("Phase 15 Step 2 test error") }, "test");
+    void flushSentry(3000).finally(() => process.exit(0));
+  } else {
   startWorker()
     .then((stop) => {
       const shutdown = async () => { await stop(); process.exit(0); };
@@ -339,4 +357,5 @@ if (isMainModule) {
       log.fatal({ err }, "opensky fatal error");
       process.exit(1);
     });
+  }
 }
