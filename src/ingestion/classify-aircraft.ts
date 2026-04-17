@@ -11,6 +11,9 @@
 
 import { getDatabase, setPgBridge } from "../memory/database.js";
 import { getPgBridge, closePg } from "../memory/pg-database.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("classify");
 
 // ── Classification rules ────────────────────────────────────────────────
 // Each rule: [class, SQL LIKE pattern]. Order matters: later rules only
@@ -171,6 +174,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("[classify] Fatal:", err);
+  log.fatal({ err }, "classify fatal error");
   process.exit(1);
 });

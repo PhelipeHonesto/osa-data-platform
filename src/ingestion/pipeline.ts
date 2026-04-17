@@ -23,6 +23,9 @@
 import { execSync } from "node:child_process";
 import { resolve } from "node:path";
 import pg from "pg";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("pipeline");
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -174,7 +177,7 @@ async function main(): Promise<void> {
     steps.push(step4);
     if (!step4.success) {
       // Safety propagation failure is non-fatal — graph is already rebuilt
-      console.warn("  ⚠ Safety ratings propagation failed — graph is still valid");
+      log.warn({}, "safety ratings propagation failed — graph is still valid");
     } else {
       stepsCompleted++;
     }
@@ -335,6 +338,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("[pipeline] Fatal:", err);
+  log.fatal({ err }, "pipeline fatal error");
   process.exit(1);
 });

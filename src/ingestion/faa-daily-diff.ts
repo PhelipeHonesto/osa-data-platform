@@ -24,6 +24,9 @@ import { resolve, join } from "node:path";
 import { getDatabase, setPgBridge } from "../memory/database.js";
 import { getPgBridge, closePg } from "../memory/pg-database.js";
 import { bulkUpsert } from "../memory/bulk-upsert.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("faa-diff");
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -433,6 +436,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("[faa-diff] Fatal:", err);
+  log.fatal({ err }, "faa-diff fatal error");
   process.exit(1);
 });

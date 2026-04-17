@@ -49,6 +49,9 @@ import { getPgBridge, closePg } from "../memory/pg-database.js";
 import type { DbBridge } from "../memory/pg-database.js";
 import { bulkUpsert } from "../memory/bulk-upsert.js";
 import { haversine } from "../utils/haversine.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("adsb-feed");
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -226,13 +229,13 @@ async function fetchGrid(): Promise<AdsbLolAircraft[]> {
           signal: AbortSignal.timeout(10_000),
         });
         if (!resp.ok) {
-          console.warn(`[adsb.lol] HTTP ${resp.status} for ${center.lat},${center.lon}`);
+          log.warn({ status: resp.status, lat: center.lat, lon: center.lon }, "HTTP error from adsb.lol");
           return [] as AdsbLolAircraft[];
         }
         const data = (await resp.json()) as AdsbLolResponse;
         return data.ac ?? [];
       } catch (err) {
-        console.warn(`[adsb.lol] Fetch error for ${center.lat},${center.lon}: ${(err as Error).message}`);
+        log.warn({ err, lat: center.lat, lon: center.lon }, "fetch error from adsb.lol");
         return [] as AdsbLolAircraft[];
       }
     }),
@@ -476,7 +479,7 @@ export async function startWorker(opts: { singleCycle?: boolean } = {}): Promise
         );
       }
     } catch (err) {
-      console.warn(`[adsb.lol] Cycle ${cycle} error: ${(err as Error).message}`);
+      log.warn({ err, cycle }, "cycle error");
     }
   }
 
@@ -495,7 +498,7 @@ export async function startWorker(opts: { singleCycle?: boolean } = {}): Promise
       const deleted = await cleanupOldPositions(db);
       if (deleted > 0) console.log(`[adsb.lol] Cleaned up ${deleted} positions older than ${POSITION_TTL_SECONDS / 3600}h`);
     } catch (err) {
-      console.warn(`[adsb.lol] Cleanup error: ${(err as Error).message}`);
+      log.warn({ err }, "cleanup error");
     }
   }, CLEANUP_INTERVAL_MS);
 
@@ -504,7 +507,7 @@ export async function startWorker(opts: { singleCycle?: boolean } = {}): Promise
       faaLookup = await loadFaaLookup(db);
       console.log(`[adsb.lol] FAA enrichment cache refreshed: ${faaLookup.size} rows`);
     } catch (err) {
-      console.warn(`[adsb.lol] FAA refresh error: ${(err as Error).message}`);
+      log.warn({ err }, "faa refresh error");
     }
   }, FAA_REFRESH_INTERVAL_MS);
 
@@ -537,7 +540,7 @@ if (isMainModule) {
       process.on("SIGTERM", shutdown);
     })
     .catch((err) => {
-      console.error("[adsb.lol] Fatal:", err);
+      log.fatal({ err }, "adsb-feed fatal error");
       process.exit(1);
     });
 }

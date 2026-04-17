@@ -31,6 +31,9 @@ import {
   ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
 import * as tar from "tar";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("cross-validate");
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -428,7 +431,7 @@ async function main(): Promise<void> {
     if (!osaTarPath || !adsblolTarPath) {
       const missing = !osaTarPath && !adsblolTarPath ? "both"
         : !osaTarPath ? "osa" : "adsblol";
-      console.warn(`[validate] missing source(s): ${missing} — recording missing_source row and exiting 0`);
+      log.warn({ missing }, "missing source(s) — recording missing_source row and exiting 0");
       if (pgClient) {
         await upsertReport(pgClient, date, "missing_source", {}, osaKey, adsblolKey,
           `missing source tar(s): ${missing}`);
@@ -473,20 +476,19 @@ async function main(): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const stack = err instanceof Error ? err.stack : undefined;
-    console.error(`[validate] FAILED: ${msg}`);
-    if (stack) console.error(stack);
+    log.error({ err, stack }, "cross-validate failed");
     if (!args.dryRun && pgClient) {
       try {
         await upsertReport(pgClient, date, "failed", {}, osaKey, adsblolKey, msg);
       } catch { /* ignore */ }
       await pgClient.end().catch(() => {});
     }
-    console.error(`[validate] work dir preserved at: ${workDir}`);
+    log.error({ work_dir: workDir }, "work dir preserved for inspection");
     process.exit(1);
   }
 }
 
 main().catch((err) => {
-  console.error("[validate] fatal:", err);
+  log.fatal({ err }, "cross-validate fatal error");
   process.exit(1);
 });

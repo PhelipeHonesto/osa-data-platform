@@ -20,6 +20,9 @@ import { getDatabase, setPgBridge } from "../memory/database.js";
 import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
 import { bulkUpsert } from "../memory/bulk-upsert.js";
 import { haversine } from "../utils/haversine.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("adsblol-ingest");
 
 // ── ICAO Type Code → Aircraft Class mapping ─────────────────────────────────
 
@@ -433,7 +436,7 @@ async function main(): Promise<void> {
 const isDirectRun = process.argv[1]?.endsWith("adsblol-ingest.ts") || process.argv[1]?.endsWith("adsblol-ingest.js");
 if (isDirectRun) {
   main().catch((err) => {
-    console.error("[adsblol] Fatal:", err);
+    log.fatal({ err }, "adsblol-ingest fatal error");
     process.exit(1);
   });
 }

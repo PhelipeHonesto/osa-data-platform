@@ -16,6 +16,9 @@ import { createInterface } from "node:readline";
 import { resolve, join } from "node:path";
 import type Database from "better-sqlite3";
 import { getDb, closeDb } from "../memory/database.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("ntsb");
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -259,6 +262,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[ntsb] Fatal:", err);
+  log.fatal({ err }, "ntsb fatal error");
   process.exit(1);
 });

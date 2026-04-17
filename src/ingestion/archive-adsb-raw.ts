@@ -20,6 +20,9 @@ import { S3Client, HeadObjectCommand, PutObjectCommand, type StorageClass } from
 import { Upload } from "@aws-sdk/lib-storage";
 import { getDatabase, setPgBridge } from "../memory/database.js";
 import { getPgBridge, type DbBridge } from "../memory/pg-database.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("archive-adsb");
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -158,7 +161,7 @@ async function fetchReleaseAssets(date: string): Promise<{ tag: string; repo: st
   if (resp.status === 403) {
     const resetHeader = resp.headers.get("x-ratelimit-reset");
     const resetIn = resetHeader ? Math.max(0, parseInt(resetHeader, 10) - Math.floor(Date.now() / 1000)) : 60;
-    console.error(`[archive] GitHub rate limited. Resets in ${resetIn}s`);
+    log.warn({ reset_in_sec: resetIn }, "GitHub rate limited");
     await sleep(Math.min(resetIn * 1000, 120_000));
     // Retry once
     const retry = await fetch(url, { headers: githubHeaders() });
@@ -393,7 +396,7 @@ async function archiveDay(
   } catch (err) {
     const durationSec = Math.round((Date.now() - startTime) / 1000);
     await markArchive(db, date, "failed", 0, 0, prefix);
-    console.error(`[archive] ${date}: FAILED (${durationSec}s) —`, err instanceof Error ? err.message : err);
+    log.error({ err, date, duration_sec: durationSec }, "archive day failed");
     return "failed";
   }
 }
@@ -479,7 +482,7 @@ export { archiveDay };
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   main().catch((err) => {
-    console.error("[archive] Fatal:", err);
+    log.fatal({ err }, "archive-adsb fatal error");
     process.exit(1);
   });
 }

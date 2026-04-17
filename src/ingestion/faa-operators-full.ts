@@ -24,6 +24,9 @@ import { resolve } from "node:path";
 import { getDatabase, setPgBridge } from "../memory/database.js";
 import { getPgBridge, closePg } from "../memory/pg-database.js";
 import { bulkUpsert } from "../memory/bulk-upsert.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("faa-operators");
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
@@ -396,6 +399,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("[operators] Fatal:", err);
+  log.fatal({ err }, "faa-operators fatal error");
   process.exit(1);
 });

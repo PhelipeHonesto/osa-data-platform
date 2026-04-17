@@ -25,6 +25,9 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { S3Client, HeadObjectCommand, PutObjectCommand, type StorageClass } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("archive-faa");
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -179,7 +182,7 @@ async function archiveRegistry(s3: S3Client, date: string): Promise<boolean> {
 
     return true;
   } catch (err) {
-    console.error(`[archive-faa] Registry ${date}: FAILED —`, err instanceof Error ? err.message : err);
+    log.error({ err, date }, "registry archive failed");
     return false;
   }
 }
@@ -221,7 +224,7 @@ async function archiveAirmen(s3: S3Client, date: string): Promise<boolean> {
 
     return true;
   } catch (err) {
-    console.error(`[archive-faa] Airmen ${month}: FAILED —`, err instanceof Error ? err.message : err);
+    log.error({ err, month }, "airmen archive failed");
     return false;
   }
 }
@@ -253,6 +256,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[archive-faa] Fatal:", err);
+  log.fatal({ err }, "archive-faa fatal error");
   process.exit(1);
 });

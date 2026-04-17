@@ -22,6 +22,9 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getDatabase, setPgBridge } from "../memory/database.js";
 import { getPgBridge, closePg } from "../memory/pg-database.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("safety-ratings");
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -319,6 +322,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("[safety] Fatal:", err);
+  log.fatal({ err }, "safety-ratings fatal error");
   process.exit(1);
 });

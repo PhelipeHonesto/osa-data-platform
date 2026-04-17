@@ -22,6 +22,9 @@ import { resolve, join } from "node:path";
 import { getDatabase, setPgBridge } from "../memory/database.js";
 import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
 import { bulkUpsert } from "../memory/bulk-upsert.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("faa-full");
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -81,7 +84,7 @@ async function downloadZip(): Promise<void> {
       execSync(`unzip -o "${zipPath}" "${f}" -d "${TEMP_DIR}"`, { stdio: "pipe" });
       console.log(`[faa-full] Extracted ${f}`);
     } catch {
-      console.warn(`[faa-full] ${f} not found in zip — skipping`);
+      log.warn({ file: f }, "file not found in zip — skipping");
     }
   }
 }
@@ -148,7 +151,7 @@ const DEREG_COLS = [
 
 async function ingestDereg(db: DbBridge): Promise<void> {
   const filePath = join(TEMP_DIR, "DEREG.txt");
-  if (!existsSync(filePath)) { console.warn("[faa-full] DEREG.txt not found — skipping"); return; }
+  if (!existsSync(filePath)) { log.warn({ file: "DEREG.txt" }, "file not found — skipping"); return; }
 
   console.log("[faa-full] Ingesting DEREG.txt → faa_deregistered...");
 
@@ -240,7 +243,7 @@ const ACFTREF_COLS = [
 
 async function ingestAcftRef(db: DbBridge): Promise<void> {
   const filePath = join(TEMP_DIR, "ACFTREF.txt");
-  if (!existsSync(filePath)) { console.warn("[faa-full] ACFTREF.txt not found — skipping"); return; }
+  if (!existsSync(filePath)) { log.warn({ file: "ACFTREF.txt" }, "file not found — skipping"); return; }
 
   console.log("[faa-full] Ingesting ACFTREF.txt → faa_aircraft_types...");
 
@@ -303,7 +306,7 @@ const ENGINE_COLS = [
 
 async function ingestEngine(db: DbBridge): Promise<void> {
   const filePath = join(TEMP_DIR, "ENGINE.txt");
-  if (!existsSync(filePath)) { console.warn("[faa-full] ENGINE.txt not found — skipping"); return; }
+  if (!existsSync(filePath)) { log.warn({ file: "ENGINE.txt" }, "file not found — skipping"); return; }
 
   console.log("[faa-full] Ingesting ENGINE.txt → faa_engine_types...");
 
@@ -356,7 +359,7 @@ async function ingestEngine(db: DbBridge): Promise<void> {
 
 async function ingestMaster(): Promise<void> {
   const masterPath = join(TEMP_DIR, "MASTER.txt");
-  if (!existsSync(masterPath)) { console.warn("[faa-full] MASTER.txt not found — skipping"); return; }
+  if (!existsSync(masterPath)) { log.warn({ file: "MASTER.txt" }, "file not found — skipping"); return; }
 
   console.log("[faa-full] Running FAA daily diff for MASTER.txt...");
   // Import and run the existing diff logic which handles MASTER.txt ingestion
@@ -370,7 +373,7 @@ async function ingestMaster(): Promise<void> {
 
 async function ingestDocindex(): Promise<void> {
   const docPath = join(TEMP_DIR, "DOCINDEX.txt");
-  if (!existsSync(docPath)) { console.warn("[faa-full] DOCINDEX.txt not found — skipping"); return; }
+  if (!existsSync(docPath)) { log.warn({ file: "DOCINDEX.txt" }, "file not found — skipping"); return; }
 
   console.log("[faa-full] Running DOCINDEX ingest...");
   execSync(
@@ -428,6 +431,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[faa-full] Fatal:", err);
+  log.fatal({ err }, "faa-full fatal error");
   process.exit(1);
 });

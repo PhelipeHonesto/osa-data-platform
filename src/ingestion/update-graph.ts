@@ -12,6 +12,9 @@
 
 import { getDatabase, setPgBridge } from "../memory/database.js";
 import { getPgBridge, closePg } from "../memory/pg-database.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("update-graph");
 
 async function main(): Promise<void> {
   if (process.env["DATABASE_TYPE"] !== "postgres") {
@@ -302,6 +305,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("[graph] Fatal:", err);
+  log.fatal({ err }, "update-graph fatal error");
   process.exit(1);
 });

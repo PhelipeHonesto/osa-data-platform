@@ -17,6 +17,9 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { resolve, join } from "node:path";
 import { getDb, closeDb } from "../memory/database.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("airmen");
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -599,6 +602,6 @@ function printReport(db: ReturnType<typeof getDb>): void {
 }
 
 main().catch((err) => {
-  console.error("[airmen] Fatal:", err);
+  log.fatal({ err }, "airmen fatal error");
   process.exit(1);
 });

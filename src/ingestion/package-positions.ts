@@ -26,6 +26,9 @@ import pg from "pg";
 import Cursor from "pg-cursor";
 import { S3Client, PutObjectCommand, type StorageClass } from "@aws-sdk/client-s3";
 import parquet from "@dsnp/parquetjs";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("packager");
 
 const { ParquetSchema, ParquetWriter } = parquet;
 
@@ -542,7 +545,7 @@ async function main(): Promise<void> {
     endPhase(p2, { rows: totalRows, aircraft: aircraftCount, parquet_bytes: parquetBytes });
 
     if (totalRows === 0) {
-      console.warn(`[pkg] no positions in window — exiting (not a failure; feed may have been down)`);
+      log.warn({}, "no positions in window — exiting (not a failure; feed may have been down)");
       if (win.utcDate && args.upload) {
         await recordRun(pgClient, win.utcDate, "complete", { rows: 0, error_message: "no positions in window" });
       }
@@ -639,19 +642,18 @@ async function main(): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const stack = err instanceof Error ? err.stack : undefined;
-    console.error(`[pkg] FAILED: ${msg}`);
-    if (stack) console.error(stack);
+    log.error({ err, stack }, "packager failed");
     if (win.utcDate && args.upload) {
       try { await recordRun(pgClient, win.utcDate, "failed", { error_message: msg }); } catch { /* ignore */ }
     }
     await pgClient.end().catch(() => {});
     // Preserve partial outputs for post-mortem — do not cleanup workDir on failure.
-    console.error(`[pkg] work dir preserved at: ${workDir}`);
+    log.error({ work_dir: workDir }, "work dir preserved for inspection");
     process.exit(1);
   }
 }
 
 main().catch((err) => {
-  console.error("[pkg] fatal:", err);
+  log.fatal({ err }, "packager fatal error");
   process.exit(1);
 });

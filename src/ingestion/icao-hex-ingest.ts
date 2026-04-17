@@ -9,6 +9,9 @@
 
 import { getDatabase, setPgBridge } from "../memory/database.js";
 import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("icao-hex");
 
 const OPENSKY_DB_URL = "https://opensky-network.org/datasets/metadata/aircraftDatabase.csv";
 const BATCH = 1000;
@@ -50,7 +53,7 @@ async function main(): Promise<void> {
 
   const resp = await fetch(OPENSKY_DB_URL, { signal: AbortSignal.timeout(60_000) });
   if (!resp.ok) {
-    console.error(`[icao-hex] HTTP ${resp.status}: ${resp.statusText}`);
+    log.error({ status: resp.status, status_text: resp.statusText }, "HTTP error downloading OpenSky CSV");
     process.exit(1);
   }
 
@@ -62,8 +65,7 @@ async function main(): Promise<void> {
   const regIdx = header.indexOf("registration");
 
   if (icaoIdx < 0 || regIdx < 0) {
-    console.error("[icao-hex] Could not find icao24 or registration columns in CSV header");
-    console.error("[icao-hex] Header:", header.join(", "));
+    log.error({ header }, "could not find icao24/registration columns in CSV header");
     process.exit(1);
   }
 
@@ -104,6 +106,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("[icao-hex] Fatal:", err);
+  log.fatal({ err }, "icao-hex fatal error");
   process.exit(1);
 });

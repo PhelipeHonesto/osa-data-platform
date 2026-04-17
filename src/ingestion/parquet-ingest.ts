@@ -23,6 +23,9 @@ import { fileURLToPath } from "node:url";
 import { getDatabase, setPgBridge } from "../memory/database.js";
 import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
 import { bulkUpsert } from "../memory/bulk-upsert.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("parquet-ingest");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -113,7 +116,7 @@ async function ingestCSV(db: DbBridge, csvPath: string): Promise<void> {
   const content = readFileSync(csvPath, "utf-8");
   const lines = content.split("\n");
   const header = lines[0];
-  if (!header) { console.error("Empty CSV"); return; }
+  if (!header) { log.error({}, "empty CSV"); return; }
 
   console.log(`[parquet-ingest] ${lines.length - 1} rows to process`);
 
@@ -244,6 +247,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("[parquet-ingest] Fatal:", err);
+  log.fatal({ err }, "parquet-ingest fatal error");
   process.exit(1);
 });
