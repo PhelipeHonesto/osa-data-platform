@@ -23,6 +23,7 @@ import { gzipSync } from "node:zlib";
 import { execSync } from "node:child_process";
 import path from "node:path";
 import pg from "pg";
+import Cursor from "pg-cursor";
 import { S3Client, PutObjectCommand, type StorageClass } from "@aws-sdk/client-s3";
 import parquet from "@dsnp/parquetjs";
 
@@ -34,6 +35,11 @@ const S3_BUCKET = "osa-dumont-backup";
 const S3_PREFIX = "raw/adsb-osa";
 const TAR_SPLIT_BYTES = 2 * 1024 ** 3;   // adsb.lol splits at 2GB into .tar.aa/.ab
 const TMP_ROOT = "/tmp";
+const PG_CURSOR_BATCH = 5_000;
+const MEMORY_LOG_EVERY_ROWS = 1_000_000;
+const MEMORY_LOG_EVERY_AIRCRAFT = 1000;
+// Hard RSS ceiling; set higher via env for debugging. 300 MB is the production budget.
+const MAX_RSS_MB = parseInt(process.env["MAX_PACKAGER_RSS_MB"] ?? "300", 10);
 
 // ── Env load (same pattern as wingx-engine.ts for CLI usage) ───────────────
 
@@ -196,82 +202,103 @@ async function loadFaaMeta(pg: pg.Client): Promise<Map<string, FaaMeta>> {
   return map;
 }
 
-async function fetchPositions(
-  pg: pg.Client,
-  startEpoch: number,
-  endEpoch: number,
-): Promise<PositionRow[]> {
-  const r = await pg.query(`
-    SELECT icao_hex, tail_number, callsign, latitude, longitude,
-           altitude_ft, ground_speed_kts, heading, vertical_rate,
-           on_ground, nearest_airport, timestamp
-    FROM adsb_positions
-    WHERE timestamp >= $1 AND timestamp < $2
-    ORDER BY icao_hex, timestamp
-  `, [startEpoch, endEpoch]);
-  return r.rows as PositionRow[];
-}
+// ── Memory / phase logging helpers ─────────────────────────────────────────
 
-// ── Parquet writer ─────────────────────────────────────────────────────────
-
-async function writeParquet(rows: PositionRow[], outPath: string): Promise<void> {
-  const writer = await ParquetWriter.openFile(parquetSchema, outPath);
-  for (const r of rows) {
-    await writer.appendRow({
-      icao_hex: r.icao_hex,
-      tail_number: r.tail_number ?? undefined,
-      callsign: r.callsign ?? undefined,
-      latitude: r.latitude,
-      longitude: r.longitude,
-      altitude_ft: r.altitude_ft ?? undefined,
-      ground_speed_kts: r.ground_speed_kts ?? undefined,
-      heading: r.heading ?? undefined,
-      vertical_rate: r.vertical_rate ?? undefined,
-      on_ground: r.on_ground,
-      nearest_airport: r.nearest_airport ?? undefined,
-      timestamp: r.timestamp,
-    });
+function logMemoryAndProgress(ctx: {
+  phase?: string;
+  rows?: number;
+  aircraft?: number;
+}): void {
+  const m = process.memoryUsage();
+  const rssMB = Math.round(m.rss / 1024 / 1024);
+  const heapMB = Math.round(m.heapUsed / 1024 / 1024);
+  const parts: string[] = [];
+  if (ctx.phase) parts.push(`phase=${ctx.phase}`);
+  if (ctx.rows !== undefined) parts.push(`rows=${ctx.rows.toLocaleString()}`);
+  if (ctx.aircraft !== undefined) parts.push(`aircraft=${ctx.aircraft.toLocaleString()}`);
+  parts.push(`rss=${rssMB}MB`);
+  parts.push(`heap=${heapMB}MB`);
+  console.log(`[pkg] ${parts.join(" ")}`);
+  if (rssMB > MAX_RSS_MB) {
+    throw new Error(`packager memory ceiling exceeded: rss=${rssMB}MB > limit=${MAX_RSS_MB}MB`);
   }
-  await writer.close();
 }
 
-// ── Tar builder (adsb.lol trace format) ────────────────────────────────────
+function startPhase(name: string): { name: string; start: number } {
+  const p = { name, start: Date.now() };
+  logMemoryAndProgress({ phase: `${name}:start` });
+  return p;
+}
 
-function buildTraces(rows: PositionRow[], faa: Map<string, FaaMeta>, tracesDir: string): number {
-  // Group positions by icao_hex. Input is already sorted by (icao_hex, timestamp).
-  mkdirSync(tracesDir, { recursive: true });
+function endPhase(p: { name: string; start: number }, stats: Record<string, number | string> = {}): void {
+  const durationS = ((Date.now() - p.start) / 1000).toFixed(1);
+  const statStr = Object.entries(stats).map(([k, v]) => `${k}=${typeof v === "number" ? v.toLocaleString() : v}`).join(" ");
+  const m = process.memoryUsage();
+  const rssMB = Math.round(m.rss / 1024 / 1024);
+  console.log(`[pkg] phase=${p.name} duration=${durationS}s rss=${rssMB}MB ${statStr}`);
+  if (rssMB > MAX_RSS_MB) {
+    throw new Error(`packager memory ceiling exceeded: rss=${rssMB}MB > limit=${MAX_RSS_MB}MB`);
+  }
+}
 
-  let currentIcao: string | null = null;
-  let bucket: PositionRow[] = [];
-  let aircraftCount = 0;
+// ── Streaming trace accumulator ────────────────────────────────────────────
+// Relies on positions arriving sorted by icao_hex — so when the icao changes,
+// we know the previous aircraft's trace is complete and can be flushed.
 
-  const flush = () => {
-    if (!currentIcao || bucket.length === 0) return;
-    const icao = currentIcao.toLowerCase();
+class TraceAccumulator {
+  private currentIcao: string | null = null;
+  private bucket: PositionRow[] = [];
+  private count = 0;
+
+  constructor(
+    private readonly tracesDir: string,
+    private readonly faa: Map<string, FaaMeta>,
+  ) {
+    mkdirSync(tracesDir, { recursive: true });
+  }
+
+  addRow(row: PositionRow): void {
+    const icao = row.icao_hex.toLowerCase();
+    if (icao !== this.currentIcao) {
+      this.flush();
+      this.currentIcao = icao;
+      this.bucket = [];
+    }
+    this.bucket.push(row);
+  }
+
+  flushLast(): number {
+    this.flush();
+    return this.count;
+  }
+
+  private flush(): void {
+    if (!this.currentIcao || this.bucket.length === 0) return;
+    const icao = this.currentIcao;
     const prefix = icao.slice(0, 2);
-    const dir = path.join(tracesDir, prefix);
+    const dir = path.join(this.tracesDir, prefix);
     mkdirSync(dir, { recursive: true });
 
-    const base = bucket[0]!.timestamp;
-    const meta = faa.get(icao);
-    const trace = bucket.map((p) => [
-      p.timestamp - base,                        // seconds offset
+    const base = this.bucket[0]!.timestamp;
+    const meta = this.faa.get(icao);
+    const trace = this.bucket.map((p) => [
+      p.timestamp - base,                           // seconds offset
       p.latitude,
       p.longitude,
-      p.on_ground ? "ground" : (p.altitude_ft ?? null),   // alt_baro
-      p.ground_speed_kts ?? null,                // gs
-      p.heading ?? null,                         // track
-      p.on_ground ? 1 : 0,                       // flags (bit 0 = on_ground)
-      p.altitude_ft ?? null,                     // alt_geom (we don't have separate; reuse)
-      null,                                      // ias
-      null,                                      // roll
-      p.vertical_rate ?? null,                   // baro_rate
-      null,                                      // details
+      p.on_ground ? "ground" : (p.altitude_ft ?? null),
+      p.ground_speed_kts ?? null,
+      p.heading ?? null,
+      p.on_ground ? 1 : 0,                          // flags (bit 0 = on_ground)
+      p.altitude_ft ?? null,                        // alt_geom (we don't track separately)
+      null,                                         // ias
+      null,                                         // roll
+      p.vertical_rate ?? null,                      // baro_rate
+      null,                                         // details
     ]);
 
     const doc = {
       icao,
-      r: meta?.tail ?? bucket[0]!.tail_number ?? null,
+      r: meta?.tail ?? this.bucket[0]!.tail_number ?? null,
       t: meta?.type ?? null,
       desc: meta?.desc ?? null,
       ownOp: meta?.ownOp ?? null,
@@ -281,21 +308,88 @@ function buildTraces(rows: PositionRow[], faa: Map<string, FaaMeta>, tracesDir: 
 
     const gz = gzipSync(Buffer.from(JSON.stringify(doc), "utf-8"));
     writeFileSync(path.join(dir, `trace_full_${icao}.json.gz`), gz);
-    aircraftCount++;
-  };
+    this.count++;
 
-  for (const row of rows) {
-    const icao = row.icao_hex.toLowerCase();
-    if (icao !== currentIcao) {
-      flush();
-      currentIcao = icao;
-      bucket = [];
-    }
-    bucket.push(row);
+    // Drop reference so the bucket's memory can be reclaimed before the next aircraft.
+    this.bucket = [];
   }
-  flush();
+}
 
-  return aircraftCount;
+// ── Streaming pipeline: PG cursor → parquet + trace accumulator ────────────
+
+async function streamToOutputs(
+  pgClient: pg.Client,
+  startEpoch: number,
+  endEpoch: number,
+  faa: Map<string, FaaMeta>,
+  parquetPath: string,
+  tracesDir: string,
+): Promise<{ rows: number; aircraft: number; parquetBytes: number }> {
+  const cursor = pgClient.query(new Cursor(
+    `SELECT icao_hex, tail_number, callsign, latitude, longitude,
+            altitude_ft, ground_speed_kts, heading, vertical_rate,
+            on_ground, nearest_airport, timestamp
+     FROM adsb_positions
+     WHERE timestamp >= $1 AND timestamp < $2
+     ORDER BY icao_hex, timestamp`,
+    [startEpoch, endEpoch],
+  ));
+
+  const writer = await ParquetWriter.openFile(parquetSchema, parquetPath);
+  const traces = new TraceAccumulator(tracesDir, faa);
+
+  let totalRows = 0;
+  let aircraftAtLastLog = 0;
+
+  try {
+    while (true) {
+      const batch = await new Promise<PositionRow[]>((resolve, reject) => {
+        cursor.read(PG_CURSOR_BATCH, (err, rows) => {
+          if (err) reject(err); else resolve((rows ?? []) as PositionRow[]);
+        });
+      });
+      if (batch.length === 0) break;
+
+      for (const row of batch) {
+        await writer.appendRow({
+          icao_hex: row.icao_hex,
+          tail_number: row.tail_number ?? undefined,
+          callsign: row.callsign ?? undefined,
+          latitude: row.latitude,
+          longitude: row.longitude,
+          altitude_ft: row.altitude_ft ?? undefined,
+          ground_speed_kts: row.ground_speed_kts ?? undefined,
+          heading: row.heading ?? undefined,
+          vertical_rate: row.vertical_rate ?? undefined,
+          on_ground: row.on_ground,
+          nearest_airport: row.nearest_airport ?? undefined,
+          timestamp: row.timestamp,
+        });
+        traces.addRow(row);
+        totalRows++;
+
+        if (totalRows % MEMORY_LOG_EVERY_ROWS === 0) {
+          logMemoryAndProgress({ rows: totalRows });
+        }
+      }
+
+      // Aircraft count is only knowable after flush-on-icao-change. Log on a
+      // coarse schedule so long-running days emit periodic heartbeats.
+      const aircraftNow = (traces as unknown as { count: number }).count;
+      if (aircraftNow - aircraftAtLastLog >= MEMORY_LOG_EVERY_AIRCRAFT) {
+        logMemoryAndProgress({ rows: totalRows, aircraft: aircraftNow });
+        aircraftAtLastLog = aircraftNow;
+      }
+    }
+  } finally {
+    await new Promise<void>((resolve) => cursor.close(() => resolve()));
+  }
+
+  const aircraft = traces.flushLast();
+  await writer.close();
+  const parquetBytes = statSync(parquetPath).size;
+
+  return { rows: totalRows, aircraft, parquetBytes };
 }
 
 function tarTraces(workDir: string, outTar: string): { size: number; split: string[] } {
@@ -419,22 +513,35 @@ async function main(): Promise<void> {
   mkdirSync(workDir, { recursive: true });
   mkdirSync(path.join(workDir, "traces"), { recursive: true });
 
+  const runStart = Date.now();
   console.log(`[pkg] window: ${win.label} (epoch ${win.startEpoch} → ${win.endEpoch})`);
   console.log(`[pkg] work dir: ${workDir}`);
   console.log(`[pkg] upload: ${args.upload ? "YES → S3" : "NO (local only)"}`);
+  console.log(`[pkg] memory ceiling: ${MAX_RSS_MB} MB rss`);
+  logMemoryAndProgress({ phase: "startup" });
 
+  const p0 = startPhase("pg_connect");
   const pgClient = await connectPg();
   if (win.utcDate && args.upload) {
     await ensureArchiveTable(pgClient);
     await recordRun(pgClient, win.utcDate, "failed", { error_message: "pending" });
   }
+  endPhase(p0);
 
   try {
-    const tFetch = Date.now();
-    const rows = await fetchPositions(pgClient, win.startEpoch, win.endEpoch);
-    console.log(`[pkg] fetched ${rows.length} positions in ${((Date.now() - tFetch) / 1000).toFixed(1)}s`);
+    const p1 = startPhase("faa_load");
+    const faa = await loadFaaMeta(pgClient);
+    endPhase(p1, { rows: faa.size });
 
-    if (rows.length === 0) {
+    // ── Stream: PG cursor → parquet + traces (constant memory) ──
+    const p2 = startPhase("stream_to_outputs");
+    const parquetPath = path.join(workDir, "positions.parquet");
+    const tracesDir = path.join(workDir, "traces");
+    const { rows: totalRows, aircraft: aircraftCount, parquetBytes } =
+      await streamToOutputs(pgClient, win.startEpoch, win.endEpoch, faa, parquetPath, tracesDir);
+    endPhase(p2, { rows: totalRows, aircraft: aircraftCount, parquet_bytes: parquetBytes });
+
+    if (totalRows === 0) {
       console.warn(`[pkg] no positions in window — exiting (not a failure; feed may have been down)`);
       if (win.utcDate && args.upload) {
         await recordRun(pgClient, win.utcDate, "complete", { rows: 0, error_message: "no positions in window" });
@@ -444,26 +551,20 @@ async function main(): Promise<void> {
       process.exit(0);
     }
 
-    const faa = await loadFaaMeta(pgClient);
-    console.log(`[pkg] faa enrichment: ${faa.size} rows`);
-
-    // ── Parquet ──
-    const parquetPath = path.join(workDir, "positions.parquet");
-    const tParquet = Date.now();
-    await writeParquet(rows, parquetPath);
-    const parquetSize = statSync(parquetPath).size;
+    const p3 = startPhase("parquet_hash");
+    const parquetSize = parquetBytes;
     const parquetSha = sha256File(parquetPath);
-    console.log(`[pkg] parquet: ${(parquetSize / 1024 ** 2).toFixed(1)} MB, sha256 ${parquetSha.slice(0, 16)}…, ${((Date.now() - tParquet) / 1000).toFixed(1)}s`);
+    endPhase(p3, { size: parquetSize });
 
-    // ── Tar (adsb.lol format) ──
-    const tTar = Date.now();
-    const aircraftCount = buildTraces(rows, faa, path.join(workDir, "traces"));
+    // ── Tar (shell-out — already streaming, reads from disk) ──
+    const p4 = startPhase("tar_build");
     const tarPath = path.join(workDir, "prod-0.tar");
     const { size: tarSize, split: tarParts } = tarTraces(workDir, tarPath);
-    const tarSha = tarParts.length === 1 ? sha256File(tarParts[0]!) : null;  // split: hash each part separately below
-    console.log(`[pkg] tar: ${(tarSize / 1024 ** 2).toFixed(1)} MB across ${tarParts.length} file(s), ${aircraftCount} aircraft, ${((Date.now() - tTar) / 1000).toFixed(1)}s`);
+    const tarSha = tarParts.length === 1 ? sha256File(tarParts[0]!) : null;
+    endPhase(p4, { size: tarSize, parts: tarParts.length });
 
     // ── Manifest ──
+    const p5 = startPhase("manifest");
     const yearMonth = win.utcDate ? `${win.utcDate.slice(0, 4)}/${win.utcDate.slice(5, 7)}/${win.utcDate}` : `test/${dateLabel}`;
     const s3DayPrefix = `${S3_PREFIX}/${yearMonth}`;
     const files: FileEntry[] = [];
@@ -472,7 +573,7 @@ async function main(): Promise<void> {
       s3_key: `${s3DayPrefix}/positions.parquet`,
       size: parquetSize,
       sha256: parquetSha,
-      rows: rows.length,
+      rows: totalRows,
       distinct_aircraft: aircraftCount,
     });
     for (const part of tarParts) {
@@ -489,30 +590,30 @@ async function main(): Promise<void> {
       files,
       total_bytes: files.reduce((s, f) => s + f.size, 0),
       distinct_aircraft: aircraftCount,
-      positions: rows.length,
+      positions: totalRows,
       time_start: new Date(win.startEpoch * 1000).toISOString(),
       time_end: new Date(win.endEpoch * 1000).toISOString(),
       archived_at: new Date().toISOString(),
     };
     const manifestPath = path.join(workDir, "manifest.json");
     writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-    console.log(`[pkg] manifest: ${files.length} file entries`);
+    endPhase(p5, { files: files.length });
 
     // ── Upload ──
     if (args.upload) {
+      const p6 = startPhase("s3_upload");
       const s3 = new S3Client({});
-      const tUpload = Date.now();
       for (const f of files) {
         await uploadToS3(s3, path.join(workDir, f.name), f.s3_key, "STANDARD");
         console.log(`[pkg] uploaded → s3://${S3_BUCKET}/${f.s3_key} (${(f.size / 1024 ** 2).toFixed(1)} MB)`);
       }
       const manifestKey = `${s3DayPrefix}/manifest.json`;
       await uploadToS3(s3, manifestPath, manifestKey, "STANDARD");
-      console.log(`[pkg] uploaded manifest → s3://${S3_BUCKET}/${manifestKey} (${((Date.now() - tUpload) / 1000).toFixed(1)}s total)`);
+      endPhase(p6, { files: files.length + 1, total_bytes: manifest.total_bytes });
 
       if (win.utcDate) {
         await recordRun(pgClient, win.utcDate, "complete", {
-          rows: rows.length,
+          rows: totalRows,
           distinct_aircraft: aircraftCount,
           compressed_bytes: manifest.total_bytes,
           positions_sha256: parquetSha,
@@ -532,14 +633,20 @@ async function main(): Promise<void> {
     await pgClient.end();
     if (!args.keepTemp && args.upload) rmSync(workDir, { recursive: true, force: true });
 
+    const totalS = ((Date.now() - runStart) / 1000).toFixed(1);
+    console.log(`[pkg] total duration=${totalS}s rows=${totalRows.toLocaleString()} aircraft=${aircraftCount.toLocaleString()}`);
     console.log(`[pkg] done.`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
     console.error(`[pkg] FAILED: ${msg}`);
+    if (stack) console.error(stack);
     if (win.utcDate && args.upload) {
       try { await recordRun(pgClient, win.utcDate, "failed", { error_message: msg }); } catch { /* ignore */ }
     }
     await pgClient.end().catch(() => {});
+    // Preserve partial outputs for post-mortem — do not cleanup workDir on failure.
+    console.error(`[pkg] work dir preserved at: ${workDir}`);
     process.exit(1);
   }
 }
