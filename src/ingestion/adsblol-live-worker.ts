@@ -50,19 +50,11 @@ import type { DbBridge } from "../memory/pg-database.js";
 import { bulkUpsert } from "../memory/bulk-upsert.js";
 import { haversine } from "../utils/haversine.js";
 import { childLogger } from "../utils/logger.js";
-import { initSentry, flushSentry } from "../utils/sentry.js";
+import { initSentry, installProcessHandlers } from "../utils/sentry.js";
 
 initSentry();
+installProcessHandlers("adsb-feed");
 const log = childLogger("adsb-feed");
-
-process.on("uncaughtException", (err) => {
-  log.fatal({ err }, "uncaught exception");
-  void flushSentry().finally(() => setTimeout(() => process.exit(1), 200));
-});
-process.on("unhandledRejection", (reason) => {
-  log.fatal({ err: reason }, "unhandled rejection");
-  void flushSentry().finally(() => setTimeout(() => process.exit(1), 200));
-});
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
