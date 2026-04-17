@@ -11,6 +11,7 @@
 
 import { getDatabase, closeDb, setPgBridge } from "../memory/database.js";
 import type { DbBridge } from "../memory/pg-database.js";
+import { bulkUpsert } from "../memory/bulk-upsert.js";
 
 // ── Load .env for CLI usage ─────────────────────────────────────────────────
 import { readFileSync } from "node:fs";
@@ -27,42 +28,6 @@ try {
     if (!process.env[k]) process.env[k] = v;
   }
 } catch { /* no .env */ }
-
-// ── Bulk upsert helper ──────────────────────────────────────────────────────
-// Collapses N-per-row network round-trips into ceil(N/500) multi-row INSERTs.
-
-async function bulkUpsert(
-  db: DbBridge,
-  table: string,
-  columns: readonly string[],
-  rows: readonly unknown[][],
-  conflictCols: readonly string[],
-  batchSize = 500,
-): Promise<void> {
-  if (rows.length === 0) return;
-  const colList = columns.join(", ");
-  const conflictList = conflictCols.join(", ");
-  const updateSet = columns
-    .filter((c) => !conflictCols.includes(c))
-    .map((c) => `${c} = EXCLUDED.${c}`)
-    .join(", ");
-
-  for (let i = 0; i < rows.length; i += batchSize) {
-    const slice = rows.slice(i, i + batchSize);
-    const placeholders: string[] = [];
-    const values: unknown[] = [];
-    let p = 1;
-    for (const row of slice) {
-      const rowPh = row.map(() => `$${p++}`).join(",");
-      placeholders.push(`(${rowPh})`);
-      values.push(...row);
-    }
-    const sql =
-      `INSERT INTO ${table} (${colList}) VALUES ${placeholders.join(",")} ` +
-      `ON CONFLICT (${conflictList}) DO UPDATE SET ${updateSet}`;
-    await db.prepare(sql).run(...values);
-  }
-}
 
 // ── Operator Market Share ───────────────────────────────────────────────────
 

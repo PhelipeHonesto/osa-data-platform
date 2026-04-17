@@ -1,20 +1,53 @@
 /**
  * adsb.lol Live ADS-B Ingestion Worker — standalone CLI process.
  *
- * Polls adsb.lol REST API every 15 seconds for US continental airspace.
- * Stores positions in adsb_positions, updates adsb_aircraft_state,
- * materializes completed legs into adsb_completed_legs.
- * Resolves hex codes to tail numbers via faa_aircraft table.
- * Cleans up positions older than 24 hours every hour.
+ * ── AUDIT (current behavior) ────────────────────────────────────────────────
  *
- * adsb.lol returns aviation units natively (feet, knots, fpm) —
- * no metric conversion needed unlike OpenSky.
+ *   Entry point:       bottom of file, `if (isMainModule) startWorker().then(…)`
+ *   Polling:           every 15 s against adsb.lol /v2/lat/{lat}/lon/{lon}/dist/250
+ *                      across a 5° × 8° grid of centers covering the US bbox
+ *   Per-cycle flow:    1. Fetch grid (parallel HTTP)
+ *                      2. Filter to US bbox
+ *                      3. For each aircraft: compute derived fields (onGround,
+ *                         nearest airport, state)
+ *                      4. Detect airborne → idle transitions → materialize legs
+ *                      5. Write positions + state updates + legs to DB
+ *   Writes to:
+ *     - adsb_positions:       (icao_hex, timestamp) tuple — no conflict key
+ *                             (PK is SERIAL id); plain INSERT.
+ *     - adsb_aircraft_state:  PK (icao_hex); UPSERT with COALESCE preservation
+ *                             on nullable enrichment fields (tail/type/class/op)
+ *                             and CASE-based idle_since / idle_hours tracking.
+ *     - adsb_completed_legs:  id SERIAL PK; plain INSERT, one row per landing
+ *                             event that has a valid takeoff in the lookback.
+ *   TTL cleanup:       every hour, DELETE FROM adsb_positions WHERE timestamp
+ *                      < now - POSITION_TTL_SECONDS (48 h).
+ *   Error handling:    per-cycle try/catch around the whole fetch+ingest;
+ *                      logs a warning on failure and keeps polling.
  *
- * Run via: npm run adsb:live
+ * ── REWRITE (this file) ────────────────────────────────────────────────────
+ *
+ *   Database target is PostgreSQL via the async DbBridge (getDatabase()).
+ *   Writes are batched via bulkUpsert — one multi-row INSERT per table per
+ *   cycle instead of per-row INSERTs. Matches the pattern used in
+ *   src/analytics/wingx-engine.ts (today's analytics fix).
+ *
+ *   In-memory caches replace per-row SQL lookups:
+ *     - airports (198 rows): loaded once, used for haversine nearest-airport
+ *     - icaoToTail, faaLookup: loaded once at startup, refreshed hourly
+ *     - currentStates: loaded once per cycle for leg-detection
+ *
+ *   Polling interval, grid, and bbox unchanged.
+ *
+ * Run:
+ *   DATABASE_TYPE=postgres npm run adsb:live
+ *   DATABASE_TYPE=postgres npx tsx src/ingestion/adsblol-live-worker.ts --single-cycle
  */
 
-import type Database from "better-sqlite3";
-import { getDb, closeDb } from "../memory/database.js";
+import { getDatabase, setPgBridge } from "../memory/database.js";
+import { getPgBridge, closePg } from "../memory/pg-database.js";
+import type { DbBridge } from "../memory/pg-database.js";
+import { bulkUpsert } from "../memory/bulk-upsert.js";
 import { haversine } from "../utils/haversine.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -22,15 +55,12 @@ import { haversine } from "../utils/haversine.js";
 const ADSBLOL_BASE = "https://api.adsb.lol/v2";
 const POLL_INTERVAL_MS = 15_000;
 const CLEANUP_INTERVAL_MS = 3_600_000;
-const POSITION_TTL_SECONDS = 86_400; // 24 hours
+const FAA_REFRESH_INTERVAL_MS = 3_600_000;
+const POSITION_TTL_SECONDS = 48 * 3600; // 48 hours — Postgres hot tier
 const LOG_EVERY_N_CYCLES = 10;
 
-// US continental bounding box — same as opensky-worker
 const US_BBOX = { lamin: 24.4, lamax: 49.4, lomin: -125.0, lomax: -66.9 };
 
-// Grid of lat/lon centers covering the US bbox, each with 250nm radius.
-// 250nm radius ≈ 4.2° lat, so spacing at ~4° gives full coverage.
-// We need roughly a 6×3 grid to blanket 24.4→49.4 lat, -125→-67 lon.
 const GRID_CENTERS: { lat: number; lon: number }[] = [];
 for (let lat = 26; lat <= 48; lat += 5) {
   for (let lon = -123; lon <= -68; lon += 8) {
@@ -42,356 +72,351 @@ for (let lat = 26; lat <= 48; lat += 5) {
 
 interface AdsbLolAircraft {
   hex: string;
-  r?: string;           // tail number
-  t?: string;           // ICAO type code
-  flight?: string;      // callsign
+  r?: string;
+  t?: string;
+  flight?: string;
   lat?: number;
   lon?: number;
-  alt_baro?: number | "ground";  // feet or "ground"
-  alt_geom?: number;    // feet
-  gs?: number;          // ground speed in knots
-  track?: number;       // degrees
-  baro_rate?: number;   // ft/min
+  alt_baro?: number | "ground";
+  alt_geom?: number;
+  gs?: number;
+  track?: number;
+  baro_rate?: number;
   category?: string;
-  ownOp?: string;       // owner/operator
-  // fields we don't use but exist in response
+  ownOp?: string;
   [key: string]: unknown;
 }
 
 interface AdsbLolResponse {
   ac: AdsbLolAircraft[] | null;
   total: number;
-  now: number;          // epoch ms
+  now: number;
   ctime: number;
   ptime: number;
 }
 
-// ── Shared types ──────────────────────────────────────────────────────────
-
-interface PositionRow {
-  icao_hex: string;
-  tail_number: string | null;
-  callsign: string | null;
-  latitude: number;
-  longitude: number;
-  altitude_ft: number | null;
-  ground_speed_kts: number | null;
-  heading: number | null;
-  vertical_rate: number | null;
-  on_ground: number;
-  nearest_airport: string | null;
-  timestamp: number;
-}
-
-interface AirportCandidate {
+interface Airport {
   icao_code: string;
   latitude: number;
   longitude: number;
 }
 
-// ── Nearest airport resolver (same as opensky-worker.ts) ──────────────────
+interface FaaRow {
+  type: string | null;
+  cls: string | null;
+  op: string | null;
+  tail: string | null;
+}
 
-function findNearestAirport(
-  db: Database.Database,
+// ── Column definitions (for bulkUpsert) ───────────────────────────────────
+
+const POSITION_COLS = [
+  "icao_hex", "tail_number", "callsign", "latitude", "longitude",
+  "altitude_ft", "ground_speed_kts", "heading", "vertical_rate",
+  "on_ground", "nearest_airport", "timestamp",
+] as const;
+
+const STATE_COLS = [
+  "icao_hex", "tail_number", "aircraft_type", "aircraft_class", "operator_name",
+  "state", "latitude", "longitude", "nearest_airport", "last_seen", "updated_at",
+] as const;
+
+const LEG_COLS = [
+  "icao_hex", "tail_number", "operator_name", "aircraft_type", "aircraft_class",
+  "origin_icao", "destination_icao", "departure_time", "arrival_time",
+  "flight_time_min", "distance_nm",
+] as const;
+
+// Preserve-on-null semantics + idle_since/idle_hours tracking in PG SQL.
+// Uses EXCLUDED.updated_at (TIMESTAMPTZ) and EXCLUDED.last_seen (TEXT ISO)
+// passed in by the JS caller — no NOW() calls inside the DB expression.
+const STATE_UPDATE_CLAUSE = `
+  tail_number = COALESCE(EXCLUDED.tail_number, adsb_aircraft_state.tail_number),
+  aircraft_type = COALESCE(EXCLUDED.aircraft_type, adsb_aircraft_state.aircraft_type),
+  aircraft_class = COALESCE(EXCLUDED.aircraft_class, adsb_aircraft_state.aircraft_class),
+  operator_name = COALESCE(EXCLUDED.operator_name, adsb_aircraft_state.operator_name),
+  state = EXCLUDED.state,
+  latitude = EXCLUDED.latitude,
+  longitude = EXCLUDED.longitude,
+  nearest_airport = COALESCE(EXCLUDED.nearest_airport, adsb_aircraft_state.nearest_airport),
+  last_seen = EXCLUDED.last_seen,
+  idle_since = CASE
+    WHEN EXCLUDED.state = 'idle_transient' AND adsb_aircraft_state.state <> 'idle_transient' THEN EXCLUDED.last_seen
+    WHEN EXCLUDED.state = 'idle_transient' THEN adsb_aircraft_state.idle_since
+    ELSE NULL
+  END,
+  idle_hours = CASE
+    WHEN EXCLUDED.state = 'idle_transient' AND adsb_aircraft_state.idle_since IS NOT NULL
+      THEN EXTRACT(EPOCH FROM (EXCLUDED.updated_at - adsb_aircraft_state.idle_since::timestamp)) / 3600.0
+    ELSE 0
+  END,
+  updated_at = EXCLUDED.updated_at
+`.trim();
+
+// ── Cache loaders ─────────────────────────────────────────────────────────
+
+async function loadAirports(db: DbBridge): Promise<Airport[]> {
+  const rows = await db.prepare(
+    "SELECT icao_code, latitude, longitude FROM faa_airports",
+  ).all() as Airport[];
+  return rows;
+}
+
+async function loadIcaoToTail(db: DbBridge): Promise<Map<string, string>> {
+  const rows = await db.prepare(
+    "SELECT icao_hex, tail_number FROM faa_aircraft WHERE icao_hex IS NOT NULL",
+  ).all() as Array<{ icao_hex: string; tail_number: string }>;
+  const map = new Map<string, string>();
+  for (const r of rows) map.set(r.icao_hex.toLowerCase(), r.tail_number);
+  return map;
+}
+
+async function loadFaaLookup(db: DbBridge): Promise<Map<string, FaaRow>> {
+  const rows = await db.prepare(
+    `SELECT icao_hex, tail_number, model, aircraft_class, certificate_holder
+     FROM faa_aircraft WHERE icao_hex IS NOT NULL`,
+  ).all() as Array<{
+    icao_hex: string; tail_number: string | null;
+    model: string | null; aircraft_class: string | null; certificate_holder: string | null;
+  }>;
+  const map = new Map<string, FaaRow>();
+  for (const r of rows) {
+    map.set(r.icao_hex.toLowerCase(), {
+      type: r.model,
+      cls: r.aircraft_class,
+      op: r.certificate_holder,
+      tail: r.tail_number,
+    });
+  }
+  return map;
+}
+
+// ── In-memory nearest airport ─────────────────────────────────────────────
+
+function findNearestInMemory(
+  airports: Airport[],
   lat: number,
   lon: number,
   maxNm = 15,
 ): string | null {
   const degRange = maxNm / 60;
-  const rows = db
-    .prepare(
-      `SELECT icao_code, latitude, longitude FROM faa_airports
-       WHERE latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?`,
-    )
-    .all(
-      lat - degRange,
-      lat + degRange,
-      lon - degRange,
-      lon + degRange,
-    ) as AirportCandidate[];
-
   let best: string | null = null;
   let bestDist = Infinity;
-  for (const row of rows) {
-    const dist = haversine(lat, lon, row.latitude, row.longitude);
+  for (const ap of airports) {
+    if (Math.abs(ap.latitude - lat) > degRange) continue;
+    if (Math.abs(ap.longitude - lon) > degRange) continue;
+    const dist = haversine(lat, lon, ap.latitude, ap.longitude);
     if (dist < bestDist && dist <= maxNm) {
       bestDist = dist;
-      best = row.icao_code;
+      best = ap.icao_code;
     }
   }
   return best;
 }
 
-// ── Tail number resolution ────────────────────────────────────────────────
-
-function buildIcaoToTailMap(db: Database.Database): Map<string, string> {
-  const rows = db
-    .prepare("SELECT icao_hex, tail_number FROM faa_aircraft WHERE icao_hex IS NOT NULL")
-    .all() as { icao_hex: string; tail_number: string }[];
-  const map = new Map<string, string>();
-  for (const row of rows) {
-    map.set(row.icao_hex.toLowerCase(), row.tail_number);
-  }
-  return map;
-}
-
 // ── Fetch adsb.lol ────────────────────────────────────────────────────────
 
 async function fetchGrid(): Promise<AdsbLolAircraft[]> {
+  const results = await Promise.all(
+    GRID_CENTERS.map(async (center) => {
+      const url = `${ADSBLOL_BASE}/lat/${center.lat}/lon/${center.lon}/dist/250`;
+      try {
+        const resp = await fetch(url, {
+          headers: { Accept: "application/json" },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!resp.ok) {
+          console.warn(`[adsb.lol] HTTP ${resp.status} for ${center.lat},${center.lon}`);
+          return [] as AdsbLolAircraft[];
+        }
+        const data = (await resp.json()) as AdsbLolResponse;
+        return data.ac ?? [];
+      } catch (err) {
+        console.warn(`[adsb.lol] Fetch error for ${center.lat},${center.lon}: ${(err as Error).message}`);
+        return [] as AdsbLolAircraft[];
+      }
+    }),
+  );
+
+  // Dedupe by icao hex across grid cells (overlapping 250 nm radii)
   const seen = new Set<string>();
   const all: AdsbLolAircraft[] = [];
-
-  for (const center of GRID_CENTERS) {
-    const url = `${ADSBLOL_BASE}/lat/${center.lat}/lon/${center.lon}/dist/250`;
-    try {
-      const resp = await fetch(url, {
-        headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!resp.ok) {
-        console.warn(`[adsb.lol] HTTP ${resp.status} for ${center.lat},${center.lon}`);
-        continue;
+  for (const batch of results) {
+    for (const ac of batch) {
+      if (!seen.has(ac.hex)) {
+        seen.add(ac.hex);
+        all.push(ac);
       }
-      const data = (await resp.json()) as AdsbLolResponse;
-      if (!data.ac) continue;
-
-      for (const ac of data.ac) {
-        if (!seen.has(ac.hex)) {
-          seen.add(ac.hex);
-          all.push(ac);
-        }
-      }
-    } catch (err) {
-      console.warn(`[adsb.lol] Fetch error for ${center.lat},${center.lon}: ${(err as Error).message}`);
     }
   }
-
   return all;
 }
 
-// ── Leg materialization for a single aircraft ─────────────────────────────
-// Called when an aircraft transitions from airborne → on_ground.
-// Looks back in adsb_positions to find the takeoff point.
+// ── Leg materialization ──────────────────────────────────────────────────
+// Called when an aircraft transitions airborne → idle_transient. Queries
+// adsb_positions for this aircraft's last 24 h to find the takeoff point.
+// Positions must already be inserted for the current cycle so "now" is visible.
 
-function tryMaterializeLeg(
-  db: Database.Database,
-  icaoHex: string,
-  landingLat: number,
-  landingLon: number,
-  landingTs: number,
-): boolean {
-  // Find the most recent ground→air transition (takeoff) before this landing
-  const positions = db.prepare(`
+interface LandingEvent {
+  icaoHex: string;
+  lat: number;
+  lon: number;
+  ts: number;
+}
+
+async function tryMaterializeLeg(
+  db: DbBridge,
+  landing: LandingEvent,
+  airports: Airport[],
+  faaLookup: Map<string, FaaRow>,
+): Promise<unknown[] | null> {
+  const positions = await db.prepare(`
     SELECT latitude, longitude, on_ground, timestamp
     FROM adsb_positions
-    WHERE icao_hex = ? AND timestamp <= ? AND timestamp >= ?
+    WHERE icao_hex = $1 AND timestamp <= $2 AND timestamp >= $3
     ORDER BY timestamp DESC
     LIMIT 500
   `).all(
-    icaoHex,
-    landingTs,
-    landingTs - 86_400, // look back max 24h
-  ) as { latitude: number; longitude: number; on_ground: number; timestamp: number }[];
+    landing.icaoHex,
+    landing.ts,
+    landing.ts - 86_400,
+  ) as Array<{ latitude: number; longitude: number; on_ground: boolean; timestamp: number }>;
 
-  // Walk backwards to find takeoff point (last on_ground before airborne sequence)
   let takeoffPos: { latitude: number; longitude: number; timestamp: number } | null = null;
   let foundAirborne = false;
-
   for (const pos of positions) {
-    if (!foundAirborne && pos.on_ground === 0) {
+    const ground = pos.on_ground === true || (pos.on_ground as unknown) === 1;
+    if (!foundAirborne && !ground) {
       foundAirborne = true;
-    } else if (foundAirborne && pos.on_ground === 1) {
-      // This is the last ground point before takeoff
-      takeoffPos = pos;
+    } else if (foundAirborne && ground) {
+      takeoffPos = { latitude: pos.latitude, longitude: pos.longitude, timestamp: pos.timestamp };
       break;
     }
   }
+  if (!takeoffPos) return null;
 
-  if (!takeoffPos) return false;
+  const flightTimeMin = Math.round((landing.ts - takeoffPos.timestamp) / 60);
+  if (flightTimeMin < 5) return null;
 
-  const flightTimeMin = Math.round((landingTs - takeoffPos.timestamp) / 60);
-  if (flightTimeMin < 5) return false; // filter taxi movements
-
-  const distNm = haversine(takeoffPos.latitude, takeoffPos.longitude, landingLat, landingLon);
-  const originIcao = findNearestAirport(db, takeoffPos.latitude, takeoffPos.longitude);
-  const destIcao = findNearestAirport(db, landingLat, landingLon);
+  const distNm = haversine(
+    takeoffPos.latitude, takeoffPos.longitude,
+    landing.lat, landing.lon,
+  );
+  const originIcao = findNearestInMemory(airports, takeoffPos.latitude, takeoffPos.longitude);
+  const destIcao = findNearestInMemory(airports, landing.lat, landing.lon);
   const depTime = new Date(takeoffPos.timestamp * 1000).toISOString();
-  const arrTime = new Date(landingTs * 1000).toISOString();
+  const arrTime = new Date(landing.ts * 1000).toISOString();
+  const faa = faaLookup.get(landing.icaoHex);
 
-  // Look up aircraft info
-  const faa = db.prepare(
-    "SELECT tail_number, model, aircraft_class, certificate_holder FROM faa_aircraft WHERE icao_hex = ?",
-  ).get(icaoHex) as { tail_number: string; model: string | null; aircraft_class: string | null; certificate_holder: string | null } | undefined;
-
-  db.prepare(`
-    INSERT INTO adsb_completed_legs
-    (icao_hex, tail_number, operator_name, aircraft_type, aircraft_class,
-     origin_icao, destination_icao, departure_time, arrival_time, flight_time_min, distance_nm)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    icaoHex,
-    faa?.tail_number ?? null,
-    faa?.certificate_holder ?? null,
-    faa?.model ?? null,
-    faa?.aircraft_class ?? null,
+  return [
+    landing.icaoHex,
+    faa?.tail ?? null,
+    faa?.op ?? null,
+    faa?.type ?? null,
+    faa?.cls ?? null,
     originIcao,
     destIcao,
     depTime,
     arrTime,
     flightTimeMin,
     Math.round(distNm),
-  );
-
-  return true;
+  ];
 }
 
-// ── Main ingestion cycle ──────────────────────────────────────────────────
+// ── Ingestion cycle ──────────────────────────────────────────────────────
 
-function ingestCycle(
-  db: Database.Database,
-  icaoToTail: Map<string, string>,
+interface CycleResult {
+  positions: number;
+  legs: number;
+  ms: number;
+}
+
+async function ingestCycle(
+  db: DbBridge,
   aircraft: AdsbLolAircraft[],
-): { positions: number; legs: number } {
-  if (aircraft.length === 0) return { positions: 0, legs: 0 };
+  airports: Airport[],
+  icaoToTail: Map<string, string>,
+  faaLookup: Map<string, FaaRow>,
+): Promise<CycleResult> {
+  const t0 = Date.now();
+  if (aircraft.length === 0) return { positions: 0, legs: 0, ms: 0 };
 
-  const insertPos = db.prepare(
-    `INSERT INTO adsb_positions
-       (icao_hex, tail_number, callsign, latitude, longitude, altitude_ft,
-        ground_speed_kts, heading, vertical_rate, on_ground, nearest_airport, timestamp)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-
-  const upsertState = db.prepare(
-    `INSERT INTO adsb_aircraft_state
-       (icao_hex, tail_number, aircraft_type, aircraft_class, operator_name,
-        state, latitude, longitude, nearest_airport, last_seen, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-     ON CONFLICT(icao_hex) DO UPDATE SET
-       tail_number = COALESCE(excluded.tail_number, adsb_aircraft_state.tail_number),
-       aircraft_type = COALESCE(excluded.aircraft_type, adsb_aircraft_state.aircraft_type),
-       aircraft_class = COALESCE(excluded.aircraft_class, adsb_aircraft_state.aircraft_class),
-       operator_name = COALESCE(excluded.operator_name, adsb_aircraft_state.operator_name),
-       state = excluded.state,
-       latitude = excluded.latitude,
-       longitude = excluded.longitude,
-       nearest_airport = COALESCE(excluded.nearest_airport, adsb_aircraft_state.nearest_airport),
-       last_seen = datetime('now'),
-       idle_since = CASE
-         WHEN excluded.state = 'idle_transient' AND adsb_aircraft_state.state != 'idle_transient' THEN datetime('now')
-         WHEN excluded.state = 'idle_transient' THEN adsb_aircraft_state.idle_since
-         ELSE NULL
-       END,
-       idle_hours = CASE
-         WHEN excluded.state = 'idle_transient' AND adsb_aircraft_state.idle_since IS NOT NULL
-           THEN (julianday('now') - julianday(adsb_aircraft_state.idle_since)) * 24.0
-         ELSE 0
-       END,
-       updated_at = datetime('now')`,
-  );
-
-  // Read current state for leg detection (airborne → ground transitions)
-  const currentStates = new Map<string, string>();
-  const stateRows = db.prepare(
-    "SELECT icao_hex, state FROM adsb_aircraft_state",
-  ).all() as { icao_hex: string; state: string }[];
-  for (const s of stateRows) currentStates.set(s.icao_hex, s.state);
-
-  // Pre-load faa_aircraft data for enrichment
-  const faaLookup = new Map<string, { type: string | null; cls: string | null; op: string | null }>();
-  const faaRows = db.prepare(
-    "SELECT icao_hex, model, aircraft_class, certificate_holder FROM faa_aircraft WHERE icao_hex IS NOT NULL",
-  ).all() as { icao_hex: string; model: string | null; aircraft_class: string | null; certificate_holder: string | null }[];
-  for (const f of faaRows) faaLookup.set(f.icao_hex.toLowerCase(), { type: f.model, cls: f.aircraft_class, op: f.certificate_holder });
-
-  const rows: PositionRow[] = [];
-  const landings: { icaoHex: string; lat: number; lon: number; ts: number }[] = [];
   const nowEpoch = Math.floor(Date.now() / 1000);
+  const nowIso = new Date(nowEpoch * 1000).toISOString();
+
+  // Load prev-state for landing detection
+  const stateRows = await db.prepare(
+    "SELECT icao_hex, state FROM adsb_aircraft_state",
+  ).all() as Array<{ icao_hex: string; state: string }>;
+  const currentStates = new Map<string, string>(
+    stateRows.map((s) => [s.icao_hex, s.state]),
+  );
+
+  const positionRows: unknown[][] = [];
+  const stateUpsertRows: unknown[][] = [];
+  const landings: LandingEvent[] = [];
 
   for (const ac of aircraft) {
     if (!ac.hex || ac.lat == null || ac.lon == null) continue;
-
-    // Filter to US bounding box (API returns some outside when near edges)
     if (ac.lat < US_BBOX.lamin || ac.lat > US_BBOX.lamax) continue;
     if (ac.lon < US_BBOX.lomin || ac.lon > US_BBOX.lomax) continue;
 
     const icaoLower = ac.hex.toLowerCase();
     const callsign = ac.flight?.trim() || null;
-
-    // adsb.lol: alt_baro can be number (feet) or "ground"
-    const onGround = ac.alt_baro === "ground" || (typeof ac.alt_baro === "number" && ac.alt_baro <= 0 && (ac.gs == null || ac.gs < 40));
+    const onGround = ac.alt_baro === "ground"
+      || (typeof ac.alt_baro === "number" && ac.alt_baro <= 0 && (ac.gs == null || ac.gs < 40));
     const altFt = typeof ac.alt_baro === "number" ? ac.alt_baro : (ac.alt_geom ?? null);
-    const speedKts = ac.gs ?? null;           // already in knots
+    const speedKts = ac.gs ?? null;
     const heading = ac.track ?? null;
-    const vertRate = ac.baro_rate ?? null;    // already in ft/min
-
-    // Resolve tail: prefer API's r field, fall back to FAA map
+    const vertRate = ac.baro_rate ?? null;
     const tailNumber = ac.r || icaoToTail.get(icaoLower) || null;
+    const nearestAirport = onGround ? findNearestInMemory(airports, ac.lat, ac.lon) : null;
 
-    // Nearest airport for on-ground aircraft
-    const nearestAirport = onGround ? findNearestAirport(db, ac.lat, ac.lon) : null;
-
-    // Detect airborne → ground transitions for leg materialization
     const prevState = currentStates.get(icaoLower);
     const newState = onGround ? "idle_transient" : "airborne";
     if (prevState === "airborne" && newState === "idle_transient") {
       landings.push({ icaoHex: icaoLower, lat: ac.lat, lon: ac.lon, ts: nowEpoch });
     }
 
-    rows.push({
-      icao_hex: icaoLower,
-      tail_number: tailNumber,
-      callsign,
-      latitude: ac.lat,
-      longitude: ac.lon,
-      altitude_ft: altFt,
-      ground_speed_kts: speedKts,
-      heading,
-      vertical_rate: vertRate,
-      on_ground: onGround ? 1 : 0,
-      nearest_airport: nearestAirport,
-      timestamp: nowEpoch,
-    });
+    positionRows.push([
+      icaoLower, tailNumber, callsign, ac.lat, ac.lon, altFt,
+      speedKts, heading, vertRate, onGround, nearestAirport, nowEpoch,
+    ]);
+
+    const faa = faaLookup.get(icaoLower);
+    stateUpsertRows.push([
+      icaoLower, tailNumber, faa?.type ?? null, faa?.cls ?? null, faa?.op ?? null,
+      newState, ac.lat, ac.lon, nearestAirport, nowIso, nowIso,
+    ]);
   }
 
-  // Batch insert in transaction
-  let legsMaterialized = 0;
-  const runBatch = db.transaction(() => {
-    for (const r of rows) {
-      insertPos.run(
-        r.icao_hex, r.tail_number, r.callsign, r.latitude, r.longitude,
-        r.altitude_ft, r.ground_speed_kts, r.heading, r.vertical_rate,
-        r.on_ground, r.nearest_airport, r.timestamp,
-      );
+  // 1. Positions — plain bulk INSERT (no unique constraint, no conflict key)
+  await bulkUpsert(db, "adsb_positions", [...POSITION_COLS], positionRows, []);
 
-      const faa = faaLookup.get(r.icao_hex);
-      // Resolve aircraft class: FAA table first, then ICAO type code lookup
-      const aircraftClass = faa?.cls ?? null;
-      const aircraftState = r.on_ground ? "idle_transient" : "airborne";
+  // 2. Legs — query positions (including the ones just inserted) per landing
+  const legRows: unknown[][] = [];
+  for (const landing of landings) {
+    const leg = await tryMaterializeLeg(db, landing, airports, faaLookup);
+    if (leg) legRows.push(leg);
+  }
+  await bulkUpsert(db, "adsb_completed_legs", [...LEG_COLS], legRows, []);
 
-      upsertState.run(
-        r.icao_hex, r.tail_number, faa?.type ?? null,
-        aircraftClass, faa?.op ?? null,
-        aircraftState, r.latitude, r.longitude, r.nearest_airport,
-      );
-    }
+  // 3. Aircraft state — UPSERT with custom preservation clause
+  await bulkUpsert(
+    db, "adsb_aircraft_state", [...STATE_COLS], stateUpsertRows,
+    ["icao_hex"], { updateClause: STATE_UPDATE_CLAUSE },
+  );
 
-    // Materialize legs for aircraft that just landed
-    for (const landing of landings) {
-      if (tryMaterializeLeg(db, landing.icaoHex, landing.lat, landing.lon, landing.ts)) {
-        legsMaterialized++;
-      }
-    }
-  });
-  runBatch();
-
-  return { positions: rows.length, legs: legsMaterialized };
+  return { positions: positionRows.length, legs: legRows.length, ms: Date.now() - t0 };
 }
 
 // ── Cleanup old positions ─────────────────────────────────────────────────
 
-function cleanupOldPositions(db: Database.Database): number {
+async function cleanupOldPositions(db: DbBridge): Promise<number> {
   const cutoff = Math.floor(Date.now() / 1000) - POSITION_TTL_SECONDS;
-  const result = db.prepare("DELETE FROM adsb_positions WHERE timestamp < ?").run(cutoff);
+  const result = await db.prepare(
+    "DELETE FROM adsb_positions WHERE timestamp < $1",
+  ).run(cutoff) as { changes: number };
   return result.changes;
 }
 
@@ -399,73 +424,99 @@ function cleanupOldPositions(db: Database.Database): number {
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
+let faaRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
-/**
- * Start the adsb.lol live ingestion worker.
- * Returns a stop function for graceful shutdown.
- */
-export async function startWorker(): Promise<() => void> {
+export async function startWorker(opts: { singleCycle?: boolean } = {}): Promise<() => Promise<void>> {
+  if (process.env["DATABASE_TYPE"] !== "postgres") {
+    throw new Error(
+      "adsblol-live-worker requires DATABASE_TYPE=postgres (SQLite path removed in Phase 2)",
+    );
+  }
+  setPgBridge(getPgBridge());
+  const db = getDatabase();
+
   console.log("[adsb.lol] Starting live ADS-B ingestion worker...");
-  console.log(`[adsb.lol] Grid: ${GRID_CENTERS.length} cells (250nm radius each)`);
-  console.log(`[adsb.lol] Poll interval: ${POLL_INTERVAL_MS / 1000}s | Cleanup: every ${CLEANUP_INTERVAL_MS / 3_600_000}h | TTL: ${POSITION_TTL_SECONDS / 3600}h`);
+  console.log(`[adsb.lol] Grid: ${GRID_CENTERS.length} cells (250nm each)`);
+  console.log(`[adsb.lol] Poll: ${POLL_INTERVAL_MS / 1000}s | Cleanup: ${CLEANUP_INTERVAL_MS / 3_600_000}h | TTL: ${POSITION_TTL_SECONDS / 3600}h`);
 
-  const db = getDb();
-  const icaoToTail = buildIcaoToTailMap(db);
-  console.log(`[adsb.lol] Loaded ${icaoToTail.size} ICAO→tail mappings from faa_aircraft`);
+  const airports = await loadAirports(db);
+  const icaoToTail = await loadIcaoToTail(db);
+  let faaLookup = await loadFaaLookup(db);
+  console.log(`[adsb.lol] Caches loaded: ${airports.length} airports, ${icaoToTail.size} ICAO→tail, ${faaLookup.size} FAA enrichment rows`);
 
   let cycle = 0;
   let totalPositions = 0;
   let totalLegs = 0;
 
-  // Poll loop
-  pollTimer = setInterval(async () => {
+  async function runCycle(): Promise<void> {
     cycle++;
     try {
+      const tFetch = Date.now();
       const aircraft = await fetchGrid();
-      const result = ingestCycle(db, icaoToTail, aircraft);
+      const fetchMs = Date.now() - tFetch;
+      const result = await ingestCycle(db, aircraft, airports, icaoToTail, faaLookup);
       totalPositions += result.positions;
       totalLegs += result.legs;
+      if (opts.singleCycle) {
+        console.log(`[feed] timing: fetch=${fetchMs}ms, ingest=${result.ms}ms`);
+      }
 
-      if (cycle % LOG_EVERY_N_CYCLES === 0) {
-        const stateCount = (db.prepare("SELECT COUNT(*) as count FROM adsb_aircraft_state").get() as { count: number }).count;
-        const idleCount = (db.prepare("SELECT COUNT(*) as count FROM adsb_aircraft_state WHERE state = 'idle_transient'").get() as { count: number }).count;
+      if (opts.singleCycle || cycle === 1 || cycle % LOG_EVERY_N_CYCLES === 0) {
+        const stateCountRow = await db.prepare(
+          "SELECT COUNT(*) AS count FROM adsb_aircraft_state",
+        ).get() as { count: number | string };
+        const idleCountRow = await db.prepare(
+          "SELECT COUNT(*) AS count FROM adsb_aircraft_state WHERE state = 'idle_transient'",
+        ).get() as { count: number | string };
         console.log(
-          `[adsb.lol] Cycle ${cycle}: ${result.positions} positions | ` +
-          `${stateCount} tracked (${idleCount} idle) | ` +
-          `${totalLegs} legs materialized | ${totalPositions} total`,
+          `[feed] cycle ${cycle} done: ${result.positions} positions, ` +
+          `${result.legs} legs, ${result.ms}ms | ` +
+          `${stateCountRow.count} tracked (${idleCountRow.count} idle) | ` +
+          `running totals: ${totalPositions} positions, ${totalLegs} legs`,
         );
       }
     } catch (err) {
       console.warn(`[adsb.lol] Cycle ${cycle} error: ${(err as Error).message}`);
     }
-  }, POLL_INTERVAL_MS);
+  }
 
-  // Cleanup loop
-  cleanupTimer = setInterval(() => {
-    const deleted = cleanupOldPositions(db);
-    if (deleted > 0) {
-      console.log(`[adsb.lol] Cleaned up ${deleted} positions older than 24h`);
+  // First cycle immediately
+  await runCycle();
+
+  if (opts.singleCycle) {
+    // Caller handles shutdown
+    return async () => { /* no timers to clear */ };
+  }
+
+  pollTimer = setInterval(runCycle, POLL_INTERVAL_MS);
+
+  cleanupTimer = setInterval(async () => {
+    try {
+      const deleted = await cleanupOldPositions(db);
+      if (deleted > 0) console.log(`[adsb.lol] Cleaned up ${deleted} positions older than ${POSITION_TTL_SECONDS / 3600}h`);
+    } catch (err) {
+      console.warn(`[adsb.lol] Cleanup error: ${(err as Error).message}`);
     }
   }, CLEANUP_INTERVAL_MS);
 
-  // Run first cycle immediately
-  try {
-    const aircraft = await fetchGrid();
-    const result = ingestCycle(db, icaoToTail, aircraft);
-    totalPositions += result.positions;
-    totalLegs += result.legs;
-    console.log(`[adsb.lol] Initial fetch: ${result.positions} positions from ${aircraft.length} aircraft, ${result.legs} legs materialized`);
-  } catch (err) {
-    console.warn(`[adsb.lol] Initial fetch failed: ${(err as Error).message} — will retry on next cycle`);
-  }
+  faaRefreshTimer = setInterval(async () => {
+    try {
+      faaLookup = await loadFaaLookup(db);
+      console.log(`[adsb.lol] FAA enrichment cache refreshed: ${faaLookup.size} rows`);
+    } catch (err) {
+      console.warn(`[adsb.lol] FAA refresh error: ${(err as Error).message}`);
+    }
+  }, FAA_REFRESH_INTERVAL_MS);
 
-  // Return stop function
-  return () => {
+  return async () => {
     console.log("[adsb.lol] Stopping worker...");
     if (pollTimer) clearInterval(pollTimer);
     if (cleanupTimer) clearInterval(cleanupTimer);
+    if (faaRefreshTimer) clearInterval(faaRefreshTimer);
     pollTimer = null;
     cleanupTimer = null;
+    faaRefreshTimer = null;
+    await closePg();
   };
 }
 
@@ -473,10 +524,17 @@ export async function startWorker(): Promise<() => void> {
 
 const isMainModule = process.argv[1]?.includes("adsblol-live-worker");
 if (isMainModule) {
-  startWorker()
-    .then((stop) => {
-      process.on("SIGINT", () => { stop(); closeDb(); process.exit(0); });
-      process.on("SIGTERM", () => { stop(); closeDb(); process.exit(0); });
+  const singleCycle = process.argv.includes("--single-cycle");
+  startWorker({ singleCycle })
+    .then(async (stop) => {
+      if (singleCycle) {
+        await stop();
+        console.log("[adsb.lol] --single-cycle complete, exiting.");
+        process.exit(0);
+      }
+      const shutdown = async () => { await stop(); process.exit(0); };
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
     })
     .catch((err) => {
       console.error("[adsb.lol] Fatal:", err);
