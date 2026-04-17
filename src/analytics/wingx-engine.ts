@@ -12,6 +12,9 @@
 import { getDatabase, closeDb, setPgBridge } from "../memory/database.js";
 import type { DbBridge } from "../memory/pg-database.js";
 import { bulkUpsert } from "../memory/bulk-upsert.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("analytics");
 
 // ── Load .env for CLI usage ─────────────────────────────────────────────────
 import { readFileSync } from "node:fs";
@@ -507,7 +510,7 @@ async function main() {
     `).get() as { earliest: string | null; latest: string | null };
 
     if (!row?.earliest || !row?.latest) {
-      console.error("[analytics] No completed legs found — nothing to aggregate");
+      log.error({}, "no completed legs found — nothing to aggregate");
       process.exit(1);
     }
     if (!fromMonth) fromMonth = row.earliest;
@@ -525,7 +528,7 @@ async function main() {
 const isDirectRun = process.argv[1]?.includes("wingx-engine");
 if (isDirectRun) {
   main().catch((err) => {
-    console.error("[analytics] Fatal:", err);
+    log.fatal({ err }, "analytics fatal error");
     process.exit(1);
   });
 }

@@ -9,6 +9,9 @@
 
 import type Database from "better-sqlite3";
 import { getDb, closeDb } from "../memory/database.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("quality");
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -299,7 +302,7 @@ async function main() {
 const isDirectRun = process.argv[1]?.includes("data-quality");
 if (isDirectRun) {
   main().catch((err) => {
-    console.error("[quality] Fatal:", err);
+    log.fatal({ err }, "quality check fatal error");
     process.exit(1);
   });
 }

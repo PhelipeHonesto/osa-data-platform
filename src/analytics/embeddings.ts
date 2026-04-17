@@ -13,6 +13,9 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("embeddings");
 import pg from "pg";
 
 const { Pool } = pg;
@@ -149,7 +152,7 @@ async function buildVectors(pool: pg.Pool): Promise<number> {
       `);
       console.log("[embeddings] IVFFlat index created");
     } catch (err) {
-      console.warn("[embeddings] IVFFlat index failed (using seq scan):", (err as Error).message);
+      log.warn({ err }, "IVFFlat index failed (using seq scan)");
     }
   }
 
@@ -201,7 +204,7 @@ export async function findSimilarRoutes(
 async function main() {
   const connStr = process.env.SUPABASE_DATABASE_URL;
   if (!connStr) {
-    console.error("[embeddings] SUPABASE_DATABASE_URL not set");
+    log.error({}, "SUPABASE_DATABASE_URL not set");
     process.exit(1);
   }
 
@@ -232,7 +235,7 @@ async function main() {
 const isDirectRun = process.argv[1]?.includes("embeddings");
 if (isDirectRun) {
   main().catch((err) => {
-    console.error("[embeddings] Fatal:", err);
+    log.fatal({ err }, "embeddings fatal error");
     process.exit(1);
   });
 }
