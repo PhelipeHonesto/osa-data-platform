@@ -14,6 +14,9 @@ import { getDatabase, setPgBridge } from "../memory/database.js";
 import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
 import { bulkUpsert } from "../memory/bulk-upsert.js";
 import { haversine } from "../utils/haversine.js";
+import { childLogger } from "../utils/logger.js";
+
+const log = childLogger("opensky");
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -163,12 +166,12 @@ async function fetchStates(): Promise<OpenSkyResponse | null> {
       signal: AbortSignal.timeout(10_000),
     });
     if (!resp.ok) {
-      console.warn(`[opensky] HTTP ${resp.status}: ${resp.statusText}`);
+      log.warn({ status: resp.status, statusText: resp.statusText }, "HTTP error from OpenSky");
       return null;
     }
     return (await resp.json()) as OpenSkyResponse;
   } catch (err) {
-    console.warn(`[opensky] Fetch error: ${(err as Error).message}`);
+    log.warn({ err }, "fetch error");
     return null;
   }
 }
@@ -257,13 +260,16 @@ export async function startWorker(): Promise<() => Promise<void>> {
   setPgBridge(getPgBridge());
   const db = getDatabase();
 
-  console.log("[opensky] Starting ADS-B ingestion worker...");
-  console.log(`[opensky] Poll: ${POLL_INTERVAL_MS / 1000}s | Cleanup: ${CLEANUP_INTERVAL_MS / 3_600_000}h | TTL: ${POSITION_TTL_SECONDS / 3600}h`);
+  log.info({
+    poll_sec: POLL_INTERVAL_MS / 1000,
+    cleanup_hr: CLEANUP_INTERVAL_MS / 3_600_000,
+    ttl_hr: POSITION_TTL_SECONDS / 3600,
+  }, "worker starting");
 
   const airports = await loadAirports(db);
   const icaoToTail = await loadIcaoToTail(db);
   let faaLookup = await loadFaaLookup(db);
-  console.log(`[opensky] Caches: ${airports.length} airports, ${icaoToTail.size} ICAO→tail, ${faaLookup.size} FAA enrichment`);
+  log.info({ airports: airports.length, icao_to_tail: icaoToTail.size, faa_enrichment: faaLookup.size }, "caches loaded");
 
   let cycle = 0;
   let totalIngested = 0;
@@ -277,13 +283,12 @@ export async function startWorker(): Promise<() => Promise<void>> {
       totalIngested += count;
       if (cycle === 1 || cycle % LOG_EVERY_N_CYCLES === 0) {
         const stateCountRow = await db.prepare("SELECT COUNT(*) as count FROM adsb_aircraft_state").get() as { count: number | string };
-        console.log(
-          `[opensky] Cycle ${cycle}: ${count} positions ingested | ` +
-          `${stateCountRow.count} tracked | ${totalIngested} total`,
-        );
+        log.info({
+          cycle, positions: count, tracked: stateCountRow.count, total: totalIngested,
+        }, "cycle complete");
       }
     } catch (err) {
-      console.warn(`[opensky] Cycle ${cycle} error: ${(err as Error).message}`);
+      log.warn({ err, cycle }, "cycle error");
     }
   }
 
@@ -294,22 +299,22 @@ export async function startWorker(): Promise<() => Promise<void>> {
   cleanupTimer = setInterval(async () => {
     try {
       const deleted = await cleanupOldPositions(db);
-      if (deleted > 0) console.log(`[opensky] Cleaned up ${deleted} positions older than ${POSITION_TTL_SECONDS / 3600}h`);
+      if (deleted > 0) log.info({ deleted, ttl_hr: POSITION_TTL_SECONDS / 3600 }, "cleaned up old positions");
     } catch (err) {
-      console.warn(`[opensky] Cleanup error: ${(err as Error).message}`);
+      log.warn({ err }, "cleanup error");
     }
   }, CLEANUP_INTERVAL_MS);
   faaRefreshTimer = setInterval(async () => {
     try {
       faaLookup = await loadFaaLookup(db);
-      console.log(`[opensky] FAA cache refreshed: ${faaLookup.size} rows`);
+      log.info({ rows: faaLookup.size }, "faa cache refreshed");
     } catch (err) {
-      console.warn(`[opensky] FAA refresh error: ${(err as Error).message}`);
+      log.warn({ err }, "faa refresh error");
     }
   }, FAA_REFRESH_INTERVAL_MS);
 
   return async () => {
-    console.log("[opensky] Stopping worker...");
+    log.info("stopping worker");
     if (pollTimer) clearInterval(pollTimer);
     if (cleanupTimer) clearInterval(cleanupTimer);
     if (faaRefreshTimer) clearInterval(faaRefreshTimer);
@@ -331,7 +336,7 @@ if (isMainModule) {
       process.on("SIGTERM", shutdown);
     })
     .catch((err) => {
-      console.error("[opensky] Fatal:", err);
+      log.fatal({ err }, "opensky fatal error");
       process.exit(1);
     });
 }
