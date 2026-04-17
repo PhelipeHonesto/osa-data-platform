@@ -64,12 +64,28 @@ SELECT status, COUNT(*) FROM backfill_progress GROUP BY status; -- all pending
 
 ### 2. Run S3-first backfill
 
+Wrap in `tmux` (so the run survives closing the terminal) and `caffeinate`
+(so macOS doesn't sleep mid-run):
+
 ```
+tmux new -s phase7
 cd ~/osa/dumont-agent
 set -a && source .env && set +a
-DATABASE_TYPE=postgres npx tsx src/ingestion/history-backfill.ts \
-  --from 2023-12-30 --to 2026-04-13 --s3-only 2>&1 | tee ~/phase7-rebuild.log
+
+caffeinate -dims \
+  env DATABASE_TYPE=postgres \
+  npx tsx src/ingestion/history-backfill.ts \
+    --from 2023-12-30 --to 2026-04-13 --s3-only 2>&1 \
+    | tee ~/phase7-rebuild.log
 ```
+
+`caffeinate -dims` flags: display (d), idle (i), disk (m), system (s) —
+keeps the machine awake through the full 3-5 hour run.
+
+`DATABASE_TYPE` is an **env var**, not a CLI flag — `history-backfill.ts`
+reads `process.env.DATABASE_TYPE` and throws if it isn't `postgres`.
+
+Detach tmux: `Ctrl+b` then `d`. Reattach: `tmux attach -t phase7`.
 
 Why `--s3-only`: fails fast if any day isn't in S3 rather than silently
 falling back to the 40 MB/s GitHub path. All 1,114 expected days are in
@@ -108,10 +124,84 @@ context in extras.
 
 - Kill with `Ctrl-C`. `backfill_progress` tracks per-day status, so
   any day mid-processing gets left at `processing` or `failed`.
-- Re-run the same command. It's idempotent — days with status `complete`
-  are skipped; `processing`/`failed` days re-run.
+- **Do NOT naively re-run.** `bulkInsertLegs` is a plain INSERT — partial
+  legs from a half-done day are already committed. Re-running that day
+  would duplicate them. See "Recovery from crash mid-rebuild" below for
+  the correct procedure.
 - If the whole run goes sideways, the step-1 `DELETE` + `UPDATE` can be
   re-applied to start clean.
+
+## Recovery from crash mid-rebuild
+
+If the rebuild crashes, you Ctrl-C, or the Mac sleeps mid-day, some days
+will be left in `processing` status with partial legs inserted for them.
+Re-running without cleanup causes duplicate legs (each chunk of 500
+trace files commits its legs independently, and `id` is SERIAL so
+there's no natural key to dedupe on).
+
+### Step 1 — Find half-done days
+
+In Supabase SQL editor:
+
+```sql
+SELECT date, status
+FROM backfill_progress
+WHERE status IN ('processing', 'failed');
+```
+
+Note the dates returned.
+
+### Step 2 — Delete their partial legs
+
+```sql
+DELETE FROM adsb_completed_legs
+WHERE departure_time::date = ANY(
+  ARRAY['2024-06-15', '2024-06-16']::date[]  -- your actual dates
+);
+```
+
+### Step 3 — Reset those days to pending
+
+```sql
+UPDATE backfill_progress
+SET status = 'pending',
+    legs_found = 0,
+    charter_legs = 0,
+    duration_seconds = 0
+WHERE status IN ('processing', 'failed');
+```
+
+### Step 4 — Re-run the same backfill command
+
+Already-complete days are skipped (`isDayComplete` only returns true for
+`status = 'complete'`). Only the reset days get reprocessed.
+
+## Monitoring mid-run
+
+The rebuild doesn't print a global progress bar. Two ways to check:
+
+**From tmux** — the date being processed appears in every log line:
+```
+tmux attach -t phase7    # see current day; detach with Ctrl+b d
+```
+
+**From a second shell via Supabase**:
+```sql
+SELECT status, COUNT(*) AS days, MAX(date) AS latest_date
+FROM backfill_progress
+GROUP BY status
+ORDER BY status;
+```
+
+Expected progression: `complete` rows grow, `pending` shrinks, and
+`latest_date` advances from `2023-12-30` toward `2026-04-13`.
+
+Expected final state: **836 rows total**, all `complete`, 0 `pending`,
+0 `failed`, 0 `processing`.
+
+If the final total is fewer than 836, some days silently skipped — most
+likely a transient S3 list error. See the `--s3-only` behavior note in
+`history-backfill.ts:processDay` and rerun those dates directly.
 
 ## Success criteria
 
