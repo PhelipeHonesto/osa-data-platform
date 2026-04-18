@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { getDatabase, setPgBridge } from "../memory/database.js";
 import { getPgBridge, closePg } from "../memory/pg-database.js";
 import { childLogger } from "../utils/logger.js";
+import { fuzzyMatch } from "./safety-ratings-fuzzy.js";
 
 const log = childLogger("safety-ratings");
 
@@ -33,48 +34,6 @@ interface RatingInput {
   argus_rating?: "gold" | "gold_plus" | "platinum" | "platinum_elite" | null;
   wyvern_rating?: "wingman" | null;
   is_bao_stage?: 1 | 2 | 3 | null;
-}
-
-// ── Fuzzy Name Matching ───────────────────────────────────────────────────
-
-/** Normalize operator name for fuzzy matching */
-function normalize(name: string): string {
-  return name
-    .toUpperCase()
-    .replace(/[,.'"\-]/g, " ")
-    .replace(/\b(LLC|INC|CORP|CORPORATION|CO|LTD|LP|GROUP|PARTNERS|HOLDINGS|AVIATION|AIR|SERVICES|MANAGEMENT)\b/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/** Check if normalized names are a fuzzy match */
-function fuzzyMatch(a: string, b: string): boolean {
-  const na = normalize(a);
-  const nb = normalize(b);
-  if (na === nb) return true;
-
-  // Skip joint-ownership entries (contains commas in original name = multiple entities)
-  if (b.includes(",") && b.split(",").length > 2) return false;
-
-  // One contains the other (but only if the contained string is substantial)
-  if (na.length >= 4 && nb.length >= 4) {
-    if (na === nb) return true;
-    // Require the shorter to be at least 60% of the longer to avoid "JET" matching everything
-    const shorter = na.length <= nb.length ? na : nb;
-    const longer = na.length > nb.length ? na : nb;
-    if (longer.includes(shorter) && shorter.length / longer.length >= 0.5) return true;
-  }
-
-  // Check if all words in the shorter are present in the longer (exact word match)
-  const wordsA = na.split(" ").filter((w) => w.length >= 3);
-  const wordsB = nb.split(" ").filter((w) => w.length >= 3);
-  if (wordsA.length === 0 || wordsB.length === 0) return false;
-  const [shorterWords, longerWords] = wordsA.length <= wordsB.length ? [wordsA, wordsB] : [wordsB, wordsA];
-  if (shorterWords.length >= 2 && longerWords.length <= shorterWords.length + 1
-    && shorterWords.every((w) => longerWords.includes(w))) {
-    return true;
-  }
-  return false;
 }
 
 /** Compute safety score from ratings */
