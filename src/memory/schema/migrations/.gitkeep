@@ -1,0 +1,2 @@
+# Placeholder. Forward migrations go here as YYYY-MM-DD-NNN-<kebab-name>.sql
+# (Schema Evolution Rule 2). First real migration lands in Phase 1 commit 2.

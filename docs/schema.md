@@ -3,9 +3,10 @@
 PostgreSQL on Supabase (`dumont-agent` project, us-east-1). SQLite at
 `data/dumont.db` is local-dev-only legacy.
 
-**Source of truth**: `src/memory/schema-pg.sql` — 45 `CREATE TABLE`
-statements across 30 migration blocks. When this doc and the SQL
-disagree, the SQL wins.
+**Source of truth**: `src/memory/schema/` — layered per Schema Evolution
+Rule 1 (see `docs/data-architecture.md`). 47 tables across
+`silver/ gold/ transactional/ analytics/ migrations/`, plus `_extensions.sql`.
+When this doc and the SQL disagree, the SQL wins.
 
 ## Storage layers
 

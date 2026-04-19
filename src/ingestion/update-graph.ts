@@ -28,7 +28,7 @@ async function main(): Promise<void> {
   console.log(`[graph] Connected to Postgres`);
 
   // ── Idempotent schema safety net ─────────────────────────────────────────
-  // Tables should exist from schema-pg.sql; these CREATE IF NOT EXISTS / ALTER
+  // Tables should exist from src/memory/schema/; these CREATE IF NOT EXISTS / ALTER
   // IF NOT EXISTS statements keep re-runs safe in environments that haven't
   // had the schema migration applied yet.
   await db.exec(`
