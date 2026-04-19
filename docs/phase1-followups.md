@@ -42,3 +42,190 @@ The remaining **3,848 rows have `certificate_number = name`** — legal entity n
 **Fix**: when the faa-operators-full.ts rewrite lands (see above), the 2 rows with real FAA cert format (`1OCA082A`, `7OCA297N`) stay. The 48 synthetic rows either (a) get replaced with real cert numbers if we can source them, or (b) stay as-is with the synthetic convention documented.
 
 **Priority**: deferred. Name-matching covers this; real cert IDs are a nice-to-have for deterministic matches against future sources that include them.
+
+---
+
+## Phase 7 rebuild uses `JSON.parse`, OOMs on large trace files
+
+**Discovered**: 2026-04-19 — morning status check.
+
+**Symptom**: V8 heap exhaustion during `v8::internal::JsonParser::MakeString` inside `parseTraceFile` (`src/ingestion/adsblol-ingest.ts`). Process dies with `FATAL ERROR: Reached heap limit` mid-day, leaving `backfill_progress` stuck at `status='processing'` for the offending date.
+
+**Frequency**: occasional — 1 crash across 380 successful days processed (first hit on 2025-01-16, 10,000/30,268 files in).
+
+**Cause**: `parseTraceFile` loads the entire gzipped trace, decompresses into a single `string`, and calls `JSON.parse`. The combined memory of (compressed bytes + decompressed string + parsed object graph) exceeds the default ~4 GB V8 heap when a single aircraft's daily trace contains hundreds of thousands of position updates. Heavy-usage fractional-fleet aircraft produce these.
+
+**Workaround applied 2026-04-19** (working-tree-only on Lightsail, not yet committed; deploys via `scp` until Phase 1 wraps, then lands as a standalone `fix(ingestion): skip oversized trace files` commit):
+
+- `MAX_TRACE_SIZE_BYTES = 500 * 1024 * 1024` (500 MB) in `src/ingestion/adsblol-ingest.ts`.
+- Pre-filter by compressed size (`statSync`) — skip if > 500 MB on disk.
+- Post-decompress check on `json.length` — skip if decompressed payload > 500 MB.
+- Skipped files increment `stats.skippedOversized`; per-day summary line includes a `N skipped (size)` suffix.
+
+**Restart procedure** when OOM recurs:
+
+```
+psql "$SUPABASE_DATABASE_URL" -c "
+  UPDATE backfill_progress
+     SET status='failed', processed_at = NOW()::text
+   WHERE date='<YYYY-MM-DD>' AND status='processing';
+"
+ssh <lightsail>
+tmux new-session -d -s phase7 -c ~/dumont-agent 'bash -c "
+  set -a; source .env; set +a;
+  export DATABASE_TYPE=postgres;
+  export NODE_OPTIONS=--max-old-space-size=4096;
+  npm run backfill:history -- --from 2023-12-30 --to 2026-04-13 --s3-only >> ~/phase7-rebuild.log 2>&1
+"'
+```
+
+(Note: `.env` on Lightsail does NOT have `DATABASE_TYPE` — must export inline.)
+
+**Proper fix**: migrate to a streaming JSON parser (`stream-json` or similar). Parsing as a stream of tokens keeps peak memory at ~10 MB regardless of input size. ~2-3 hours of work. Blocks on the rebuild completing; revisit post-Phase-1.
+
+**Priority**: after Phase 1 complete.
+
+---
+
+## Phase 1 calibration surface (captured 2026-04-19 during commit 8b)
+
+Ten items that the 50-pair labeling + review pass exposed. Each is
+non-blocking for landing Phase 1 but informs ER architecture and/or
+targeted cleanup before Phase 2 scaling.
+
+### 1. Operators canonical type audit — non-operator entities polluting Gold
+
+At least 5 rows in `operators` are not operating carriers: **Accent
+Airways** (billing agent), **Global Jet Capital** (financier), **TAG
+Aviation USA** (legacy — Part 135 sold 2007, now DOT Part 295 broker
+only), **VistaJet US** (broker front, routes to internal operators),
+and likely more surfaced via the review queue.
+
+- Fix: add `operator_type` enum on `operators` (`carrier | broker |
+  financier | management_company | billing_agent | defunct`).
+- Audit all 271 rows; reclassify or remove non-carriers from the
+  Sourcing match surface.
+- **Priority**: before Phase 2 Sourcing cutover — these rows will
+  produce wrong recommendations if not flagged.
+
+### 2. Duplicate canonical rows — same entity, two operator_ids
+
+Calibration pair 16 surfaced **A-Ok Jets** as two separate `operator_id`
+UUIDs: one created from the ARGUS-side scrape, one from Wyvern-side.
+Both have `wyvern` or `argus` identities pointing at them; neither
+matched the other during resolution because name-only medium-tier
+signals fell below the auto-match bar.
+
+- Fix: batch dedup pass. For each cluster of `operator_aliases` /
+  `operator_identities` sharing the same `name_as_provided`
+  (normalized), collapse to a single canonical row. Keep the oldest
+  `first_seen_at`. Update downstream identities' `operator_id`.
+- This happens naturally when the same operator appears in both
+  ARGUS and Wyvern but neither has enough signal to cross-match.
+- **Priority**: run before the next safety-ratings refresh.
+
+### 3. Canonical name typos inherited from ingestion
+
+Calibration pair 7 matched `Premier Private Jets` (scraped Wyvern) to
+`Premiere Private Jets` (FAA canonical, spelling error). Match correct;
+canonical record wrong — FAA `PREM001` legal-name field has the typo.
+
+- Fix: cleanup pass over FAA-sourced canonical names. Spelling fixes
+  go via a targeted UPDATE with audit trail in `reviewer_notes`.
+- Other suspected typos to audit: look for unusual characters, doubled
+  letters, missing spaces in `canonical_name`.
+- **Priority**: low; individually each typo costs nothing, matcher
+  handles variants via trigram.
+
+### 4. Rebrand pattern frequency — 9 rebrands in 50 sampled pairs
+
+Calibration data shows rebrands are a common ~18% of match uncertainty.
+The `medium_name_only` threshold correctly routed these to review
+(validated in commit 8b). But a systematic rebrand-tracking capability
+is missing.
+
+- Observation: single-source LLM aggregators (what LLMs produce when
+  asked about operator rebrands) have a **~25% false-rebrand rate**
+  in informal validation.
+- ER plan: enforce a **Two-Source Rule** — entity merge events require
+  corroboration from at least two independent authoritative sources
+  before the canonical row is updated.
+- **Priority**: before Phase 3 scaling, when rebrand volume will
+  exceed what a human can review per week.
+
+### 5. Temporal operator attribution — aircraft re-registered mid-year
+
+An aircraft can be re-registered between sister-entity certs mid-year
+(e.g., fractional pools re-assigning fleet between subsidiaries). The
+operator-of-record at a specific point in time is different from the
+current operator.
+
+- Current limitation: `adsb_completed_legs.operator_name` captures
+  the operator at the time of the leg but isn't joined back to a
+  canonical operator with a temporal validity range.
+- Fix: introduce `aircraft_operator_history(aircraft_id, operator_id,
+  valid_from, valid_to)` table. Queries join on leg timestamp.
+- **Priority**: Phase 3 aircraft canonical layer.
+
+### 6. Brand_group concept for multi-jurisdiction operators
+
+TAG Aviation, VistaJet, Wheels Up, Phenix Jet, and similar global
+brands hold separate AOCs in different jurisdictions. Each AOC is a
+legally distinct operating entity, so each should be a separate
+`operators` row. But they share a brand.
+
+- Fix: `brand_groups` table + `operators.brand_group_id` nullable FK.
+- Agent-facing views can optionally roll up by brand_group when
+  presenting recommendations.
+- **Priority**: Phase 2, once the canonical layer is stable.
+
+### 7. FAA GENOT notices — authoritative source for name changes
+
+FAA General Notices (GENOT) are the authoritative record for US
+operator name changes, Part 135 cert reassignments, and fleet moves.
+Currently un-ingested.
+
+- Fix: ingest GENOT feed (`faa.gov/about/office_org/headquarters_
+  offices/ato/service_units/air_traffic_services/genot/`, format
+  varies). Write to `faa_genot_notices` Silver table. Cross-reference
+  with `faa_registry_changes` for name-update events.
+- Superior to trade press or LLM aggregators — zero false positives.
+- **Priority**: high for data-quality, medium for implementation
+  (the feed format is not easy).
+
+### 8. Multi-cert single-parent — separate operators under single holding
+
+Wheels Up operates **2 certs**, West Coast Aviation Services operates
+**2 certs**. Different from multi-jurisdiction (§6) — same country,
+same brand, legal reasons for two AOCs.
+
+- Fix: model as separate `operators` rows (each AOC is a legally
+  distinct operator), joined via `brand_group_id` from §6.
+- Do NOT collapse at the `operators` level. The legal entity IS the
+  operator.
+- **Priority**: tied to §6 timing.
+
+### 9. Non-US operators — 7 surfaced in 50 pairs
+
+Wyvern data pulled operators like Aerolineas Ejecutivas (Mexico),
+Acropolis Aviation Ltd (UK), TAG Aviation UK, and similar. Current
+schema has no field distinguishing US-only from global.
+
+- Fix option A: add `international_operator` boolean tag in
+  `type_tags` array.
+- Fix option B: split into `foreign_operators` canonical.
+- Lean toward (A) — keeps one query target, adds a filter, simpler
+  for agents. Decide when Phase 3 aircraft layer forces the issue.
+- **Priority**: before serving international-route queries.
+
+### 10. Broker-funnel detection — XO, Wheels Up, VistaJet US
+
+Certain operators (XO, VistaJet US, Wheels Up's broker-branded front)
+route customer bookings to internal or third-party operators. The
+public brand and the actual operator are different.
+
+- Fix: compute `funnel_ratio` per broker row (% of bookings where
+  the flown operator differs from the booked operator). Surface in
+  Dumont responses with a contextual caveat.
+- Does NOT gate recommendations (per commit 10 usage-boundary rule).
+- **Priority**: after Phase 2 booking data lands.

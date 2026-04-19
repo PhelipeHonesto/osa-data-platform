@@ -410,6 +410,22 @@ Phase order within any migration:
 
 **Never do 1 → 6 in a single migration.** The cost of dual-writing for 1–2 weeks is vastly lower than the cost of a broken reader you didn't know about.
 
+**Migration idempotency**: every `migrations/YYYY-MM-DD-NNN-*.sql` file must be safe to re-apply. `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` are idempotent by construction. Statements without an `IF NOT EXISTS` form (e.g. `ALTER TABLE ... RENAME COLUMN`) must be wrapped in an `information_schema` guard:
+
+```sql
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'operators' AND column_name = 'trust_score'
+  ) THEN
+    ALTER TABLE operators RENAME COLUMN trust_score TO data_confidence_score;
+  END IF;
+END $$;
+```
+
+This lets `npm run db:migrate-pg` re-run any number of times without failing on "column already renamed" / "table already exists" / "index already present" errors. Migrations that can't be made idempotent don't belong in `migrations/` — they belong in a one-shot admin script run manually.
+
 ### Rule 6 — Gold agent-facing views are the ONLY direct SQL interface
 
 Non-negotiable:
