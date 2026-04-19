@@ -410,6 +410,8 @@ Phase order within any migration:
 
 **Never do 1 → 6 in a single migration.** The cost of dual-writing for 1–2 weeks is vastly lower than the cost of a broken reader you didn't know about.
 
+**New indexes on new columns belong ONLY in the migration file — never duplicated in the canonical `CREATE TABLE` block.** `CREATE TABLE IF NOT EXISTS` is a no-op on pre-migration DBs (the table already exists without the new column), so any `CREATE INDEX` that references the new column will hard-fail before the migration runs. Declare the column in the CREATE TABLE body (so fresh installs get it), but leave the index to the migration. This bit commits 1, 10, and 13 — learn from it.
+
 **Migration idempotency**: every `migrations/YYYY-MM-DD-NNN-*.sql` file must be safe to re-apply. `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` are idempotent by construction. Statements without an `IF NOT EXISTS` form (e.g. `ALTER TABLE ... RENAME COLUMN`) must be wrapped in an `information_schema` guard:
 
 ```sql

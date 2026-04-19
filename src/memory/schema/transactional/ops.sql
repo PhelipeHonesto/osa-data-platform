@@ -19,13 +19,19 @@ CREATE TABLE IF NOT EXISTS processed_webhooks (
   processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Generic ingestion-job tracking. Originally FAA-pipeline specific; generalized
+-- in migration 2026-04-19-002 with job_name + row_count_delta + metadata.
+-- Existing FAA columns (new_aircraft, deregistered, ...) kept for backward
+-- compat with src/ingestion/pipeline.ts writes; new jobs use metadata JSONB.
 CREATE TABLE IF NOT EXISTS pipeline_runs (
   id SERIAL PRIMARY KEY,
+  job_name TEXT NOT NULL DEFAULT 'faa_nightly',
   started_at TEXT NOT NULL,
   ended_at TEXT,
   status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'completed', 'failed')),
   steps_completed INTEGER NOT NULL DEFAULT 0,
   failed_step TEXT,
+  -- FAA-pipeline-specific columns (legacy; new jobs leave these 0)
   new_aircraft INTEGER NOT NULL DEFAULT 0,
   deregistered INTEGER NOT NULL DEFAULT 0,
   ownership_changes INTEGER NOT NULL DEFAULT 0,
@@ -34,10 +40,17 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   ghost_candidates INTEGER NOT NULL DEFAULT 0,
   total_in_graph INTEGER NOT NULL DEFAULT 0,
   charter_tracked INTEGER NOT NULL DEFAULT 0,
+  -- Generic columns (2026-04-19-002)
+  row_count_delta INTEGER DEFAULT 0,
+  metadata JSONB DEFAULT '{}'::jsonb,
   error_message TEXT,
   schema_version INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_date ON pipeline_runs(started_at);
+-- idx_pipeline_runs_job is created by migrations/2026-04-19-002-pipeline-runs-generic.sql
+-- after the job_name column is added. Cannot live here because CREATE TABLE
+-- IF NOT EXISTS is a no-op on pre-migration DBs → index would reference a
+-- non-existent column → hard fail. See data-architecture.md Rule 5.
 
 CREATE TABLE IF NOT EXISTS backfill_progress (
   date TEXT PRIMARY KEY,
