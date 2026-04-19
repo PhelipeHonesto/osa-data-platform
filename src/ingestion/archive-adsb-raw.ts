@@ -285,16 +285,21 @@ async function markArchive(
   totalBytes = 0,
   s3Prefix: string | null = null,
 ): Promise<void> {
+  // Dialect-neutral: pass the timestamp as a parameter instead of calling
+  // datetime('now') (SQLite-only) or NOW() (PG-only). archive-adsb-raw
+  // requires DATABASE_TYPE=postgres (enforced at main()), but the param
+  // form removes the last SQLite-ism from this file.
+  const archivedAt = new Date().toISOString();
   await db.prepare(`
     INSERT INTO archive_progress (date, status, files_archived, total_bytes, s3_prefix, archived_at)
-    VALUES (?, ?, ?, ?, ?, datetime('now'))
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(date) DO UPDATE SET
       status = excluded.status,
       files_archived = excluded.files_archived,
       total_bytes = excluded.total_bytes,
       s3_prefix = excluded.s3_prefix,
       archived_at = excluded.archived_at
-  `).run(date, status, filesArchived, totalBytes, s3Prefix);
+  `).run(date, status, filesArchived, totalBytes, s3Prefix, archivedAt);
 }
 
 async function isArchiveComplete(db: DbBridge, date: string): Promise<boolean> {
