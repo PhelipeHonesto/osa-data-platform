@@ -55,7 +55,13 @@ Gold has two conceptual sub-tiers that share the same layer:
 operators
   - id                   UUID (stable forever — never reused)
   - canonical_name       TEXT NOT NULL
-  - canonical_type       TEXT CHECK (... IN ('charter', 'fractional', 'corporate'))
+  -- Multi-valued (Q8 resolution). Real operators often span multiple
+  -- categories (charter + management, cargo + air_ambulance) and an
+  -- enum would force one-hot assignments that don't reflect reality.
+  - type_tags            TEXT[] NOT NULL DEFAULT '{}' CHECK (type_tags <@ ARRAY[
+                           'charter','fractional','corporate','air_ambulance',
+                           'cargo','management','military','government'
+                         ]::TEXT[])
   - headquarters_icao    TEXT
   - trust_score          NUMERIC(3,2)           -- see Data Trust Scores
   - first_seen_at        TIMESTAMPTZ NOT NULL
@@ -304,28 +310,39 @@ These rules govern how the schema evolves as Phase 1–4+ land. They prevent a w
 
 ### Rule 1 — Schema is split by layer
 
-Starting in Phase 1, `src/memory/schema-pg.sql` is split:
+The schema lives in `src/memory/schema/`, split by layer:
 
 ```
 src/memory/schema/
-  ├── silver/
-  │   ├── faa.sql              (faa_operators, faa_aircraft, ...)
-  │   ├── adsb.sql             (adsb_completed_legs, ...)
-  │   ├── safety-sources.sql   (argus_ratings_facts, wyvern_ratings_facts)
-  │   ├── market.sql
+  _extensions.sql              (CREATE EXTENSION pgvector, ...)
+  ├── silver/                  (ingested: FAA, ADS-B, NTSB, scrapers)
+  │   ├── faa.sql
+  │   ├── adsb.sql
+  │   ├── safety-ratings.sql
   │   └── ...
   ├── gold/
-  │   ├── canonical/
-  │   │   ├── operators.sql    (operators + identities + aliases)
+  │   ├── canonical/           (entity-resolved master data)
+  │   │   ├── operators.sql
   │   │   └── aircraft.sql     (Phase 3)
-  │   └── views/
+  │   ├── infra/               (Gold plumbing — refresh log, etc.)
+  │   │   └── gold-view-refresh.sql
+  │   └── views/               (agent-facing materialized views — Phase 2+)
   │       ├── operator-views.sql
   │       └── fleet-views.sql  (Phase 3)
+  ├── transactional/           (app-born: deals, messages, calls, ops state)
+  │   ├── deals.sql
+  │   ├── communications.sql
+  │   └── ...
+  ├── analytics/               (derived aggregates: knowledge_graph, WINGX)
+  │   ├── knowledge-graph.sql
+  │   └── wingx.sql
   └── migrations/
       └── YYYY-MM-DD-NNN-<name>.sql
 ```
 
-Each migration is a separate file. A `migrations.sql` orchestrator includes them in order.
+Medallion (`silver/`, `gold/`) applies to ingested data. `transactional/` and `analytics/` are sibling folders for data that doesn't fit the medallion pattern — tables born in the app or derived from it, not ingested.
+
+`src/memory/migrate-pg.ts` concatenates files in deterministic load order (`_extensions` → `transactional` → `silver` → `analytics` → `gold/canonical` → `gold/infra` → `gold/views` → `migrations`) and executes against Postgres. Every statement is `CREATE ... IF NOT EXISTS`, so re-applying is idempotent.
 
 ### Rule 2 — Migration naming
 
