@@ -25,6 +25,8 @@ export interface MatchSignals {
   stateMatch?: boolean;
   /** City matches (after normalization). */
   cityMatch?: boolean;
+  /** Phone number matches (after normalization). */
+  phoneMatch?: boolean;
 }
 
 const WEIGHTS = {

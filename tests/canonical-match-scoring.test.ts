@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { computeNameSim, scoreMatch } from "../src/memory/canonical/match-scoring.js";
-import { tierOf, THRESHOLDS } from "../src/memory/canonical/match-thresholds.js";
+import {
+  tierOf,
+  THRESHOLDS,
+  REQUIRE_SIGNAL_AT_TIERS,
+  hasCorroboratingSignal,
+} from "../src/memory/canonical/match-thresholds.js";
 
 describe("computeNameSim", () => {
   it("returns 1 for identical names", () => {
@@ -42,6 +47,46 @@ describe("scoreMatch — weighted signal combination", () => {
   it("clamps to [0, 1]", () => {
     expect(scoreMatch({ nameSim: -0.5 })).toBeGreaterThanOrEqual(0);
     expect(scoreMatch({ nameSim: 1.5 })).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("hasCorroboratingSignal", () => {
+  it("returns false when only nameSim is present (the common sparse-signal case)", () => {
+    expect(hasCorroboratingSignal({ nameSim: 0.85 })).toBe(false);
+  });
+
+  it("returns true when icaoMatch is explicitly true", () => {
+    expect(hasCorroboratingSignal({ nameSim: 0.85, icaoMatch: true })).toBe(true);
+  });
+
+  it("returns true when stateMatch is explicitly true", () => {
+    expect(hasCorroboratingSignal({ nameSim: 0.85, stateMatch: true })).toBe(true);
+  });
+
+  it("returns true when cityMatch is explicitly true", () => {
+    expect(hasCorroboratingSignal({ nameSim: 0.85, cityMatch: true })).toBe(true);
+  });
+
+  it("returns true when phoneMatch is explicitly true (forward-compat)", () => {
+    expect(hasCorroboratingSignal({ nameSim: 0.85, phoneMatch: true })).toBe(true);
+  });
+
+  it("returns false when signals are explicit FALSE (known mismatch, not unknown)", () => {
+    expect(hasCorroboratingSignal({
+      nameSim: 0.85,
+      icaoMatch: false,
+      stateMatch: false,
+      cityMatch: false,
+    })).toBe(false);
+  });
+});
+
+describe("REQUIRE_SIGNAL_AT_TIERS config", () => {
+  it("defaults to requiring a signal at medium tier (pre-calibration)", () => {
+    expect(REQUIRE_SIGNAL_AT_TIERS).toContain("medium");
+  });
+  it("does not require a signal at high tier (high is always auto-match)", () => {
+    expect(REQUIRE_SIGNAL_AT_TIERS).not.toContain("high");
   });
 });
 

@@ -102,28 +102,45 @@ describe("resolveOperator — high-tier clean match", () => {
   });
 });
 
-describe("resolveOperator — medium-tier match", () => {
-  it("writes identity with match_confidence='medium' when top score is in the medium band", async () => {
+describe("resolveOperator — medium-tier with only name signal", () => {
+  it("downgrades to review (reason='medium_name_only') per REQUIRE_SIGNAL_AT_TIERS", async () => {
     const { client, calls } = makeMockClient([
       { matcher: /UPDATE operator_identities/, rows: [] },
       {
         matcher: /FROM operators o/,
         rows: [
-          // "Stop Air" produces a mid-range similarity with "NetJets Aviation" —
-          // use a deliberately weaker candidate so we land in medium not high.
+          // Medium-tier candidate: name similarity ~0.8 with no corroborating signal
           { operator_id: "op-c", canonical_name: "NetJets Stop Air", headquarters_icao: null, state: null, city: null },
         ],
       },
-      { matcher: /INSERT INTO operator_identities/, rows: [{ id: 77 }] },
+      { matcher: /INSERT INTO operator_match_review/, rows: [{ id: 500 }] },
     ]);
     const result = await resolveOperator(baseScraped, client);
-    // Score must have landed somewhere ≥ medium < high for this to assert 'medium'.
-    if (result.action === "matched") {
-      expect(["high", "medium"]).toContain(result.matchConfidence);
-    } else {
-      // If the single-candidate score crossed high, test re-arranges below.
-      expect(result.action).toMatch(/matched|review|new/);
-    }
+    expect(result.action).toBe("review");
+    expect(result.reason).toBe("medium_name_only");
+    expect(result.reviewId).toBe(500);
+    expect(calls.some((c) => /INSERT INTO operator_identities/i.test(c.sql))).toBe(false);
+  });
+});
+
+describe("resolveOperator — medium-tier with corroborating signal still auto-matches", () => {
+  it("keeps action='matched' when ICAO signal corroborates the medium-tier name match", async () => {
+    const { client, calls } = makeMockClient([
+      { matcher: /UPDATE operator_identities/, rows: [] },
+      {
+        matcher: /FROM operators o/,
+        rows: [
+          // Same weak name match, but this time the candidate has an ICAO we match on.
+          { operator_id: "op-c", canonical_name: "NetJets Stop Air", headquarters_icao: "KCMH", state: null, city: null },
+        ],
+      },
+      { matcher: /INSERT INTO operator_identities/, rows: [{ id: 601 }] },
+    ]);
+    const scraped = { ...baseScraped, icao: "KCMH" };
+    const result = await resolveOperator(scraped, client);
+    expect(result.action).toBe("matched");
+    expect(result.reason).toBeFalsy();
+    expect(result.identityId).toBe(601);
     expect(calls.some((c) => /operator_match_review/i.test(c.sql))).toBe(false);
   });
 });

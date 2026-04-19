@@ -13,6 +13,8 @@
  * change materially (new signal added, source-reliability weights shift).
  */
 
+import type { MatchSignals } from "./match-scoring.js";
+
 export interface MatchThresholds {
   readonly high: number;
   readonly medium: number;
@@ -40,6 +42,36 @@ export const THRESHOLDS: MatchThresholds = {
  * auto-silently is exactly the risk MDM is supposed to prevent.
  */
 export const AMBIGUITY_EPSILON = 0.02;
+
+/**
+ * Tiers that require at least one corroborating signal beyond name_sim
+ * to auto-match. If name is the only available signal, these tiers
+ * downgrade to the review queue.
+ *
+ * Rationale: in sparse-signal environments (e.g. Wyvern data with zero
+ * ICAO), "medium" confidence on name alone means "names look similar
+ * but nothing else confirms." That's a review candidate, not an
+ * auto-match.
+ *
+ * Calibrated in commit 8 — may become empty, may include 'low' (redundant
+ * since low already goes to review), may get more complex (require 2
+ * signals, require ICAO specifically).
+ */
+export const REQUIRE_SIGNAL_AT_TIERS: ReadonlyArray<"high" | "medium" | "low"> = ["medium"];
+
+/**
+ * True when the signal set has at least one corroborating match beyond
+ * name similarity. A signal only counts when it explicitly equals true —
+ * `undefined` (unknown) and `false` (known mismatch) both fail the check.
+ */
+export function hasCorroboratingSignal(signals: MatchSignals): boolean {
+  return (
+    signals.icaoMatch === true ||
+    signals.stateMatch === true ||
+    signals.cityMatch === true ||
+    signals.phoneMatch === true
+  );
+}
 
 /**
  * Confidence tier a weighted-match score falls into. "exact" is reserved

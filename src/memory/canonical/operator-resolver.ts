@@ -37,7 +37,12 @@ import pg from "pg";
 import { randomUUID } from "node:crypto";
 import { getPool } from "../pg-database.js";
 import { computeNameSim, scoreMatch, type MatchSignals } from "./match-scoring.js";
-import { AMBIGUITY_EPSILON, tierOf } from "./match-thresholds.js";
+import {
+  AMBIGUITY_EPSILON,
+  tierOf,
+  REQUIRE_SIGNAL_AT_TIERS,
+  hasCorroboratingSignal,
+} from "./match-thresholds.js";
 import type { Source } from "./operator-field-priority.js";
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -65,7 +70,7 @@ export interface ResolverResult {
   reviewId: number | null;
   matchConfidence: "exact" | "high" | "medium" | "low" | "manual" | null;
   topScore: number | null;
-  reason?: "ambiguous_runner_up" | "low_tier" | null;
+  reason?: "ambiguous_runner_up" | "low_tier" | "medium_name_only" | null;
 }
 
 interface OperatorCandidate {
@@ -161,16 +166,16 @@ function scoreCandidates(
 interface Decision {
   action: Exclude<ResolverActionKind, "exact">;
   confidence: "high" | "medium" | "low";
-  reason?: "ambiguous_runner_up" | "low_tier";
+  reason?: "ambiguous_runner_up" | "low_tier" | "medium_name_only";
 }
 
 function decide(scored: ScoredCandidate[]): Decision {
   if (scored.length === 0) {
     return { action: "new", confidence: "high" };
   }
-  const topScore = scored[0]?.score ?? 0;
+  const top = scored[0]!;
   const secondScore = scored[1]?.score ?? 0;
-  const tier = tierOf(topScore);
+  const tier = tierOf(top.score);
 
   if (tier === "new_operator") {
     return { action: "new", confidence: "high" };
@@ -179,8 +184,13 @@ function decide(scored: ScoredCandidate[]): Decision {
     return { action: "review", confidence: "low", reason: "low_tier" };
   }
   // Ambiguity guard: downgrade high/medium to review when runner-up is close.
-  if (scored.length >= 2 && topScore - secondScore < AMBIGUITY_EPSILON) {
+  if (scored.length >= 2 && top.score - secondScore < AMBIGUITY_EPSILON) {
     return { action: "review", confidence: tier, reason: "ambiguous_runner_up" };
+  }
+  // Signal-required tier: if the tier gate demands a corroborating signal
+  // beyond name similarity and none is present, downgrade to review.
+  if (REQUIRE_SIGNAL_AT_TIERS.includes(tier) && !hasCorroboratingSignal(top.signals)) {
+    return { action: "review", confidence: tier, reason: "medium_name_only" };
   }
   return { action: "matched", confidence: tier };
 }
@@ -246,7 +256,7 @@ async function writeReview(
   client: pg.PoolClient,
   scraped: ScrapedRecord,
   scored: ScoredCandidate[],
-  reason: "ambiguous_runner_up" | "low_tier",
+  reason: "ambiguous_runner_up" | "low_tier" | "medium_name_only",
 ): Promise<{ reviewId: number }> {
   const top3 = scored.slice(0, 3).map((c) => ({
     operator_id: c.operator_id,
