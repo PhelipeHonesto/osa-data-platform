@@ -356,7 +356,7 @@ async function processDay(
 
     // 4. Process in chunks: parse → detect legs in memory → bulk write
     const stats: IngestStats = {
-      processed: 0, skippedNonUS: 0, usAircraft: 0,
+      processed: 0, skippedNonUS: 0, skippedOversized: 0, usAircraft: 0,
       positionsIngested: 0, positionsRaw: 0,
       classCounts: {},
       unmatchedTypes: new Map<string, number>(),
@@ -402,9 +402,10 @@ async function processDay(
     const durationSec = Math.round((Date.now() - startTime) / 1000);
     await markDay(db, date, "complete", totalLegs, charterLegCount, durationSec);
 
+    const oversizedSuffix = stats.skippedOversized > 0 ? ` | ${stats.skippedOversized} skipped (size)` : "";
     console.log(
       `[backfill] ${date}: done | ${totalLegs} legs (${charterLegCount} charter) | ` +
-      `${stats.usAircraft} aircraft | ${stats.errors} errors | ${durationSec}s`,
+      `${stats.usAircraft} aircraft | ${stats.errors} errors${oversizedSuffix} | ${durationSec}s`,
     );
     return "processed";
   } catch (err) {

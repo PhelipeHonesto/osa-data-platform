@@ -82,6 +82,7 @@ export interface DownsampledPoint {
 export interface IngestStats {
   processed: number;
   skippedNonUS: number;
+  skippedOversized: number;
   usAircraft: number;
   positionsIngested: number;
   positionsRaw: number;
@@ -89,6 +90,17 @@ export interface IngestStats {
   unmatchedTypes: Map<string, number>;
   errors: number;
 }
+
+/**
+ * Maximum trace file size (compressed or decompressed) that parseTraceFile
+ * will attempt. Above this, the file is skipped and stats.skippedOversized
+ * increments. Rationale: JSON.parse loads the whole trace into memory, and
+ * V8's default ~4 GB heap OOMs on files whose decompressed JSON exceeds
+ * that. A handful of aircraft (heavy-usage fractional fleets, mostly) have
+ * daily traces that blow past reasonable limits. Streaming-parser
+ * migration tracked in docs/phase1-followups.md.
+ */
+export const MAX_TRACE_SIZE_BYTES = 500 * 1024 * 1024; // 500 MB
 
 export interface Airport {
   icao_code: string;
@@ -198,6 +210,18 @@ export function downsampleTrace(data: TraceFile): DownsampledPoint[] {
  *  Returns null for non-US aircraft (same filter as the pre-Phase-6 version).
  *  No DB writes — the caller accumulates and bulk-writes. */
 export function parseTraceFile(filePath: string, stats: IngestStats): ParsedTrace | null {
+  // Compressed-size pre-filter. A gzipped trace that already exceeds the
+  // threshold at rest will almost always OOM on decompress+parse.
+  const fileStats = statSync(filePath);
+  if (fileStats.size > MAX_TRACE_SIZE_BYTES) {
+    stats.skippedOversized++;
+    log.warn(
+      { file: filePath, sizeMB: (fileStats.size / 1024 / 1024).toFixed(0), stage: "compressed" },
+      "skipping oversized trace file",
+    );
+    return null;
+  }
+
   const raw = readFileSync(filePath);
   let json: string;
   try {
@@ -206,6 +230,18 @@ export function parseTraceFile(filePath: string, stats: IngestStats): ParsedTrac
     // Some trace files are stored uncompressed — fall back to raw UTF-8.
     json = raw.toString("utf-8");
   }
+
+  // Decompressed-size check. Catches files that compress well but have
+  // huge position counts — the actual OOM scenario we saw on 2025-01-16.
+  if (json.length > MAX_TRACE_SIZE_BYTES) {
+    stats.skippedOversized++;
+    log.warn(
+      { file: filePath, sizeMB: (json.length / 1024 / 1024).toFixed(0), stage: "decompressed" },
+      "skipping oversized trace file",
+    );
+    return null;
+  }
+
   const data: TraceFile = JSON.parse(json);
 
   // Filter: only US aircraft with registration
@@ -381,7 +417,7 @@ async function main(): Promise<void> {
   console.log(`[adsblol] Found ${files.length} trace files`);
 
   const stats: IngestStats = {
-    processed: 0, skippedNonUS: 0, usAircraft: 0,
+    processed: 0, skippedNonUS: 0, skippedOversized: 0, usAircraft: 0,
     positionsIngested: 0, positionsRaw: 0,
     classCounts: {},
     unmatchedTypes: new Map<string, number>(),
@@ -425,6 +461,7 @@ async function main(): Promise<void> {
   console.log(`Downsampled:     ${stats.positionsIngested.toLocaleString()} points (from ${stats.positionsRaw.toLocaleString()} raw)`);
   console.log(`Completed legs:  ${totalLegs}`);
   console.log(`Errors:          ${stats.errors}`);
+  console.log(`Skipped (size):  ${stats.skippedOversized}`);
   console.log(`\nCharter-class aircraft:`);
   for (const [cls, count] of Object.entries(stats.classCounts).sort((a, b) => b[1] - a[1])) {
     console.log(`  ${cls}: ${count}`);
