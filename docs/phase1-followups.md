@@ -101,8 +101,9 @@ Aviation USA** (legacy — Part 135 sold 2007, now DOT Part 295 broker
 only), **VistaJet US** (broker front, routes to internal operators),
 and likely more surfaced via the review queue.
 
-- Fix: add `operator_type` enum on `operators` (`carrier | broker |
-  financier | management_company | billing_agent | defunct`).
+- Fix: add `operator_type` enum on `operators`. See
+  `docs/er-architecture-plan.md` — Ontology shape section for the
+  canonical 10-value `operator_type` enum.
 - Audit all 271 rows; reclassify or remove non-carriers from the
   Sourcing match surface.
 - **Priority**: before Phase 2 Sourcing cutover — these rows will

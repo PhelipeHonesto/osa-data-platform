@@ -228,5 +228,6 @@ When all pass:
 - `docs/known-issues.md` — what contamination looks like
 - `docs/phase7-timestamp-bugfix.md` — the underlying fix
 - `docs/phase7-restore-log.md` — Glacier bulk restore
-- `docs/phase7-s3-first.md` *(implicit — see `history-backfill.ts` comments)*
 - `docs/phase7-schema-apply.md` — one-time Supabase ALTER for verify columns
+- S3-first ingestion path: see the header comments in
+  `src/ingestion/history-backfill.ts` (no separate doc).

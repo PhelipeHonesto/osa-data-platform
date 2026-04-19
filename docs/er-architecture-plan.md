@@ -60,7 +60,7 @@ Full schema → `docs/semantic/operators.yaml` and later-stage additions.
 
 Ranked by trust and independence. Higher tiers outweigh lower tiers on disputed claims.
 
-- **Tier A — Public authoritative (free)**: FAA Registry, FAA GENOT notices, FAA Part 135 OpSpec D085, FAA Enforcement, NTSB, DOT Part 295 filings, state business registries, UCC filings, SEC EDGAR, ICAO ADREP.
+- **Tier A — Public authoritative (free)**: FAA Registry, FAA GENOT notices, FAA Part 135 OpSpec D085 <!-- TODO 2026-04-19: verify OpSpec D085 is separately obtainable post-Feb-2026 Part-135-list-drop (cf. line 18). If only the aggregate list was retired, D085 filings per-operator may still be FOIA-able or available via RAO; if D085 is also gone, demote this entry. -->, FAA Enforcement, NTSB, DOT Part 295 filings, state business registries, UCC filings, SEC EDGAR, ICAO ADREP.
 - **Tier B — Operator self-published**: company websites, corporate newswire press releases. Self-interested but timestamped and first-party.
 - **Tier C — Cross-industry independent**: ADS-B position history (physics doesn't lie, uniquely unfakeable), aviation press (AIN, BJT, Corporate Jet Investor), trade associations (NBAA, NATA), Wikipedia with source review, academic research.
 - **Tier D — Paid but trustworthy**: OpenSanctions (free), Open Ownership BODS (free), GLEIF LEI (free), ch-aviation (paid), Corporate Jet Investor Intelligence (paid).
