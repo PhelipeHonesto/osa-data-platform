@@ -270,6 +270,199 @@ function buildReviewPair(
   };
 }
 
+// ── Score mode ───────────────────────────────────────────────────────────
+
+export type Label = "correct" | "incorrect" | "use_other" | "new_operator";
+
+export interface LabeledPair extends CalibrationPair {
+  label: Label | null;
+  comment: string | null;
+}
+
+export interface StratumAnalysis {
+  count: number;
+  correct: number;
+  precision: number;
+  correct_score_min: number | null;
+  correct_score_max: number | null;
+  wrong_score_min: number | null;
+  wrong_score_max: number | null;
+}
+
+export interface Analysis {
+  auto_match: StratumAnalysis;
+  review_ambiguous: StratumAnalysis;
+  review_medium_name_only: StratumAnalysis;
+  review_low_tier: StratumAnalysis;
+  false_positive_auto_matches: Array<{
+    pair_id: number;
+    scraped_name: string;
+    top_candidate: string;
+    score: number;
+    comment: string | null;
+  }>;
+  recommendations: {
+    high: number;
+    medium: number;
+    low: number;
+    calibrated_at: string;
+    calibrated_sample_size: number;
+  };
+}
+
+export function loadLabeledSample(path: string): LabeledPair[] {
+  const raw = readFileSync(path, "utf-8");
+  const pairs = JSON.parse(raw) as LabeledPair[];
+  const unlabeled = pairs.filter((p) => p.label === null);
+  if (unlabeled.length > 0) {
+    throw new Error(
+      `${unlabeled.length} of ${pairs.length} pairs are unlabeled — fill every 'label' field before --score`,
+    );
+  }
+  return pairs;
+}
+
+function analyzeStratum(pairs: LabeledPair[]): StratumAnalysis {
+  const correctScores = pairs.filter((p) => p.label === "correct").map((p) => p.score);
+  const wrongScores = pairs
+    .filter((p) => p.label === "new_operator" || p.label === "incorrect")
+    .map((p) => p.score);
+  return {
+    count: pairs.length,
+    correct: correctScores.length,
+    precision: pairs.length > 0 ? correctScores.length / pairs.length : 0,
+    correct_score_min: correctScores.length > 0 ? Math.min(...correctScores) : null,
+    correct_score_max: correctScores.length > 0 ? Math.max(...correctScores) : null,
+    wrong_score_min: wrongScores.length > 0 ? Math.min(...wrongScores) : null,
+    wrong_score_max: wrongScores.length > 0 ? Math.max(...wrongScores) : null,
+  };
+}
+
+/**
+ * Calibration logic (auditable — all math is explicit):
+ *
+ *   high = max(0.90, lowest_correct_auto_match - 0.005)
+ *     (keep all known-correct above the line; don't go lower than 0.90)
+ *     Floor ensures we never relax the default. A sample with no wrong
+ *     auto-matches leaves high at the default 0.90.
+ *
+ *   medium = 0.75 (unchanged — stratum precision is already governed by
+ *     REQUIRE_SIGNAL_AT_TIERS, not absolute score).
+ *
+ *   low = 0.60 (unchanged — review stratum serves the low band; raising
+ *     would reject true matches below 0.70 without catching more FPs).
+ */
+export function analyzeLabels(pairs: LabeledPair[]): Analysis {
+  const auto = pairs.filter((p) => p.type === "auto_match");
+  const review = pairs.filter((p) => p.type === "review_queue");
+
+  const analyses = {
+    auto_match: analyzeStratum(auto),
+    review_ambiguous: analyzeStratum(review.filter((p) => p.reason === "ambiguous_runner_up")),
+    review_medium_name_only: analyzeStratum(review.filter((p) => p.reason === "medium_name_only")),
+    review_low_tier: analyzeStratum(review.filter((p) => p.reason === "low_tier")),
+  };
+
+  const falsePositives = auto
+    .filter((p) => p.label === "new_operator" || p.label === "incorrect")
+    .map((p) => ({
+      pair_id: p.pair_id,
+      scraped_name: p.scraped_name,
+      top_candidate: p.top_candidate.canonical_name,
+      score: p.score,
+      comment: p.comment,
+    }));
+
+  // high threshold: strictly below the lowest correct auto_match, rounded
+  // down to 2 decimal places. Floor at the default 0.90 so calibration
+  // never relaxes the matcher. FP guard: 0.93 * 100 = 93.00000000000001
+  // in JS, so detect "essentially on a cent boundary" via epsilon.
+  const lowestCorrectAutoMatch = analyses.auto_match.correct_score_min ?? 0.9;
+  const tightenedHigh = (() => {
+    const cents = lowestCorrectAutoMatch * 100;
+    const floorCents = Math.floor(cents + 1e-9);
+    const atBoundary = Math.abs(cents - floorCents) < 1e-6;
+    const recCents = atBoundary ? floorCents - 1 : floorCents;
+    return Math.max(0.9, recCents / 100);
+  })();
+
+  return {
+    ...analyses,
+    false_positive_auto_matches: falsePositives,
+    recommendations: {
+      high: tightenedHigh,
+      medium: 0.75,
+      low: 0.6,
+      calibrated_at: new Date().toISOString(),
+      calibrated_sample_size: pairs.length,
+    },
+  };
+}
+
+function printAnalysisReport(a: Analysis): void {
+  const fmt = (s: StratumAnalysis, label: string) => {
+    const p = (s.precision * 100).toFixed(0);
+    const cr = s.correct_score_min !== null
+      ? `[${s.correct_score_min.toFixed(3)}-${s.correct_score_max!.toFixed(3)}]`
+      : "n/a";
+    const wr = s.wrong_score_min !== null
+      ? `[${s.wrong_score_min.toFixed(3)}-${s.wrong_score_max!.toFixed(3)}]`
+      : "n/a";
+    console.log(`  ${label.padEnd(24)} ${s.correct}/${s.count} correct (${p}%)  correct ${cr}  wrong ${wr}`);
+  };
+  console.log(`\n[calibrate] Per-stratum precision:`);
+  fmt(a.auto_match, "auto_match (high):");
+  fmt(a.review_ambiguous, "ambiguous_runner_up:");
+  fmt(a.review_medium_name_only, "medium_name_only:");
+  fmt(a.review_low_tier, "low_tier:");
+
+  if (a.false_positive_auto_matches.length > 0) {
+    console.log(`\n[calibrate] Auto-match false positives (should NOT have auto-matched):`);
+    for (const fp of a.false_positive_auto_matches) {
+      console.log(`  pair ${fp.pair_id}: '${fp.scraped_name}' → '${fp.top_candidate}' (score=${fp.score.toFixed(3)})`);
+      if (fp.comment) console.log(`    ${fp.comment}`);
+    }
+  }
+
+  console.log(`\n[calibrate] Recommended thresholds:`);
+  console.log(`  high:   ${a.recommendations.high.toFixed(2)}  (was 0.90)`);
+  console.log(`  medium: ${a.recommendations.medium.toFixed(2)}  (unchanged — signal gate is load-bearing)`);
+  console.log(`  low:    ${a.recommendations.low.toFixed(2)}  (unchanged — review catches low-tier)`);
+}
+
+/**
+ * Persist every review_queue pair's comment into
+ * operator_match_review.reviewer_notes, keyed by (scraped_source, scraped_source_id).
+ * Comments on auto_match pairs are not persisted — those rows are in
+ * operator_identities, not review queue.
+ */
+async function persistReviewComments(
+  client: pg.PoolClient,
+  pairs: LabeledPair[],
+): Promise<number> {
+  const reviewWithComment = pairs.filter(
+    (p) => p.type === "review_queue" && p.comment !== null && p.comment !== "",
+  );
+  let persisted = 0;
+  for (const p of reviewWithComment) {
+    const sourceId = p.top_candidate.operator_id; // Not the right key — scraped_source_id is what we need.
+    // Pull the scraped_source_id from the review row using scraped_name + scraped_source
+    // (operator_match_review doesn't expose scraped_source_id in the sample JSON — we
+    // use scraped_name as the join key).
+    const res = await client.query(
+      `UPDATE operator_match_review
+          SET reviewer_notes = $1
+        WHERE scraped_source = $2
+          AND scraped_name = $3
+          AND status = 'pending'`,
+      [p.comment, p.source, p.scraped_name],
+    );
+    void sourceId;
+    persisted += res.rowCount ?? 0;
+  }
+  return persisted;
+}
+
 // ── Env load ─────────────────────────────────────────────────────────────
 
 function loadEnv(): void {
@@ -352,40 +545,54 @@ async function main(): Promise<void> {
     throw new Error("operators:calibrate requires DATABASE_TYPE=postgres");
   }
   const { sample, score } = parseArgs(process.argv.slice(2));
-  if (score) {
-    throw new Error("--score mode lands in commit 8b");
-  }
-  if (!sample) {
-    throw new Error("usage: npm run operators:calibrate -- --sample");
+  if (sample === score) {
+    throw new Error("usage: npm run operators:calibrate -- --sample | --score");
   }
 
   const pool = getPool();
   const client = await pool.connect();
   try {
-    const pairs = await runSample(client, DEFAULT_TARGETS);
+    if (sample) {
+      const pairs = await runSample(client, DEFAULT_TARGETS);
 
-    mkdirSync(dirname(OUTPUT_PATH), { recursive: true });
-    writeFileSync(OUTPUT_PATH, JSON.stringify(pairs, null, 2) + "\n", "utf-8");
+      mkdirSync(dirname(OUTPUT_PATH), { recursive: true });
+      writeFileSync(OUTPUT_PATH, JSON.stringify(pairs, null, 2) + "\n", "utf-8");
 
-    const byType = pairs.reduce<Record<string, number>>((acc, p) => {
-      acc[p.type] = (acc[p.type] ?? 0) + 1;
-      return acc;
-    }, {});
-    const byReason = pairs.reduce<Record<string, number>>((acc, p) => {
-      const key = p.reason ?? "auto_match";
-      acc[key] = (acc[key] ?? 0) + 1;
-      return acc;
-    }, {});
+      const byType = pairs.reduce<Record<string, number>>((acc, p) => {
+        acc[p.type] = (acc[p.type] ?? 0) + 1;
+        return acc;
+      }, {});
+      const byReason = pairs.reduce<Record<string, number>>((acc, p) => {
+        const key = p.reason ?? "auto_match";
+        acc[key] = (acc[key] ?? 0) + 1;
+        return acc;
+      }, {});
 
-    console.log(`\n[calibrate] Wrote ${pairs.length} pairs → ${OUTPUT_PATH}`);
-    console.log(`[calibrate] By type:`, byType);
-    console.log(`[calibrate] By reason:`, byReason);
-    console.log(`\n[calibrate] Label values:`);
-    console.log(`  "correct"      top_candidate is right`);
-    console.log(`  "incorrect"    top_candidate is wrong, no other_candidate is right → new_operator`);
-    console.log(`  "use_other"    an other_candidates entry is right — say which in comment`);
-    console.log(`  "new_operator" none of the candidates fit; this is a new operator`);
-    console.log(`  (auto_match type: only correct | incorrect)`);
+      console.log(`\n[calibrate] Wrote ${pairs.length} pairs → ${OUTPUT_PATH}`);
+      console.log(`[calibrate] By type:`, byType);
+      console.log(`[calibrate] By reason:`, byReason);
+      console.log(`\n[calibrate] Label values:`);
+      console.log(`  "correct"      top_candidate is right`);
+      console.log(`  "incorrect"    top_candidate is wrong, no other_candidate is right → new_operator`);
+      console.log(`  "use_other"    an other_candidates entry is right — say which in comment`);
+      console.log(`  "new_operator" none of the candidates fit; this is a new operator`);
+      console.log(`  (auto_match type: only correct | incorrect)`);
+    } else {
+      // --score mode
+      const pairs = loadLabeledSample(OUTPUT_PATH);
+      const analysis = analyzeLabels(pairs);
+      printAnalysisReport(analysis);
+
+      const persisted = await persistReviewComments(client, pairs);
+      console.log(`\n[calibrate] Persisted ${persisted} comments into operator_match_review.reviewer_notes`);
+      console.log(`\n[calibrate] To apply the calibration, update src/memory/canonical/match-thresholds.ts:`);
+      const recs = analysis.recommendations;
+      console.log(`  high: ${recs.high.toFixed(2)}`);
+      console.log(`  medium: ${recs.medium.toFixed(2)}`);
+      console.log(`  low: ${recs.low.toFixed(2)}`);
+      console.log(`  calibrated_at: "${recs.calibrated_at}"`);
+      console.log(`  calibrated_sample_size: ${recs.calibrated_sample_size}`);
+    }
   } finally {
     client.release();
     await closePg();

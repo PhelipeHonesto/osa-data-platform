@@ -4,7 +4,9 @@ import {
   sampleUpTo,
   assignPairIds,
   DEFAULT_TARGETS,
+  analyzeLabels,
   type CalibrationPair,
+  type LabeledPair,
 } from "../scripts/calibrate-match-thresholds.js";
 
 describe("parseArgs", () => {
@@ -89,6 +91,81 @@ describe("assignPairIds", () => {
     expect(out?.reason).toBe("medium_name_only");
     expect(out?.label).toBeNull();
     expect(out?.comment).toBeNull();
+  });
+});
+
+describe("analyzeLabels — per-stratum precision + recommended thresholds", () => {
+  const labeled = (over: Partial<LabeledPair>): LabeledPair => ({
+    pair_id: 1,
+    type: "auto_match",
+    scraped_name: "op",
+    source: "wyvern",
+    score: 0.95,
+    reason: null,
+    top_candidate: { operator_id: "u", canonical_name: "X", existing_sources: [] },
+    other_candidates: [],
+    label: "correct",
+    comment: null,
+    ...over,
+  });
+
+  it("computes auto_match precision across correct + false-positive mix", () => {
+    const pairs: LabeledPair[] = [
+      labeled({ pair_id: 1, score: 0.98, label: "correct" }),
+      labeled({ pair_id: 2, score: 0.96, label: "correct" }),
+      labeled({ pair_id: 3, score: 0.91, label: "new_operator" }),
+    ];
+    const a = analyzeLabels(pairs);
+    expect(a.auto_match.count).toBe(3);
+    expect(a.auto_match.correct).toBe(2);
+    expect(a.auto_match.precision).toBeCloseTo(2 / 3);
+    expect(a.false_positive_auto_matches).toHaveLength(1);
+    expect(a.false_positive_auto_matches[0]?.pair_id).toBe(3);
+  });
+
+  it("recommends a high threshold just below the lowest correct auto_match score", () => {
+    const pairs: LabeledPair[] = [
+      labeled({ score: 0.99, label: "correct" }),
+      labeled({ score: 0.93, label: "correct" }),
+      labeled({ score: 0.91, label: "new_operator" }),
+    ];
+    const a = analyzeLabels(pairs);
+    // Lowest correct = 0.93; recommended = 0.93 - 0.005 = 0.925 → rounded to 0.93 (2dp round).
+    expect(a.recommendations.high).toBeGreaterThanOrEqual(0.9);
+    expect(a.recommendations.high).toBeLessThan(0.93);
+  });
+
+  it("floors the high threshold at 0.90 even when correct range is lower", () => {
+    const pairs: LabeledPair[] = [labeled({ score: 0.7, label: "correct" })];
+    const a = analyzeLabels(pairs);
+    expect(a.recommendations.high).toBe(0.9);
+  });
+
+  it("keeps medium and low unchanged (stratum precision not threshold-separable)", () => {
+    const a = analyzeLabels([labeled({})]);
+    expect(a.recommendations.medium).toBe(0.75);
+    expect(a.recommendations.low).toBe(0.6);
+  });
+
+  it("splits review_queue pairs by reason", () => {
+    const pairs: LabeledPair[] = [
+      labeled({ type: "review_queue", reason: "medium_name_only", label: "correct", score: 0.82 }),
+      labeled({ type: "review_queue", reason: "medium_name_only", label: "new_operator", score: 0.80 }),
+      labeled({ type: "review_queue", reason: "low_tier", label: "new_operator", score: 0.65 }),
+      labeled({ type: "review_queue", reason: "ambiguous_runner_up", label: "new_operator", score: 0.86 }),
+    ];
+    const a = analyzeLabels(pairs);
+    expect(a.review_medium_name_only.count).toBe(2);
+    expect(a.review_medium_name_only.correct).toBe(1);
+    expect(a.review_low_tier.count).toBe(1);
+    expect(a.review_ambiguous.count).toBe(1);
+  });
+
+  it("stamps calibrated_at as an ISO timestamp and records sample size", () => {
+    const pairs: LabeledPair[] = [labeled({}), labeled({}), labeled({})];
+    const a = analyzeLabels(pairs);
+    expect(a.recommendations.calibrated_sample_size).toBe(3);
+    expect(a.recommendations.calibrated_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 });
 

@@ -24,11 +24,16 @@ export interface MatchThresholds {
 }
 
 export const THRESHOLDS: MatchThresholds = {
-  high: 0.90,
+  // Calibrated 2026-04-19 against a 50-pair labeled sample. high raised from
+  // 0.90 → 0.91 to catch the "Pacific Jet Charter" class of false positive
+  // (score 0.908, different entities sharing a prefix). medium + low
+  // unchanged — stratum precision is governed by REQUIRE_SIGNAL_AT_TIERS
+  // and the review queue, not absolute score cutoffs.
+  high: 0.91,
   medium: 0.75,
   low: 0.60,
-  calibrated_at: null,
-  calibrated_sample_size: null,
+  calibrated_at: "2026-04-19T20:20:40.132Z",
+  calibrated_sample_size: 50,
 };
 
 /**
