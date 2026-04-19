@@ -128,6 +128,55 @@ Not every table belongs in Postgres. The 2026 pattern for teams at OSA's scale i
 - **Iceberg / Delta table formats** — not needed at OSA's current scale.
 - We use **plain Parquet in S3, accessed directly via DuckDB**, until the format war settles. See Adoption Triggers for the revisit conditions.
 
+## Transformation Framework
+
+Where Compute and Storage Strategy covers *where* data lives, this section covers *how* it moves between layers.
+
+### Current state (Phase 0–1)
+
+Bronze → Silver transformations run in TypeScript ingestion code (`src/ingestion/`). Phase 1's entity resolution — weighted scoring, tiered confidence, manual review queue — also stays in TypeScript. The matching algorithm is iterative and stateful; SQL is a poor fit.
+
+### Target state (Phase 2+)
+
+**dbt (data build tool)** handles Silver → Gold canonical and Gold canonical → Gold agent-facing view transformations. dbt is the 2026 industry standard for SQL-first transformations and integrates natively with Postgres + DuckDB via the `dbt-postgres` and `dbt-duckdb` adapters.
+
+**Why dbt**:
+
+- Auto-generated lineage and documentation.
+- SQL-first — fits Silver → Gold transformations cleanly.
+- Built-in testing (uniqueness, not-null, referential integrity, custom).
+- First-class Postgres + `dbt-duckdb` adapter support.
+- Semantic metadata via `schema.yml` files — ties directly to the Semantic Layer section above.
+- Staging / intermediate / marts pattern maps onto Bronze / Silver / Gold.
+
+**Why NOT in Phase 1**:
+
+- Entity resolution is algorithmic with weighted scoring and a manual review queue — better expressed in TypeScript than SQL.
+- Phase 1 has a handful of transformations, small enough to hand-code.
+- dbt pays off at 10+ models, not 3.
+
+### Adoption trigger
+
+Start of Phase 2 — when we build the first agent-facing Gold view on top of the canonical operators layer.
+
+### Phase 2 dbt project structure
+
+```
+dbt/
+  models/
+    staging/         — mirror of Silver with light cleanup
+    intermediate/    — entity-resolved Gold canonical (refs Phase 1 tables)
+    marts/           — agent-facing Gold views (operator_profile,
+                       fleet_intelligence, route_intelligence)
+  tests/             — custom tests for business logic
+  snapshots/         — slowly-changing dimension capture
+  seeds/             — small reference data
+```
+
+### Alternative considered
+
+**SQLMesh** — newer dbt competitor with better incremental-build semantics. Ecosystem maturity and the `dbt-duckdb` adapter currently tilt toward dbt; reassess at Phase 2 entry.
+
 ## Entity Resolution Strategy
 
 Matching new records to canonical operators happens **at ingestion time, not query time**. Query-time matching means every agent call pays the cost and gets subtly different answers depending on fuzzy-match thresholds.
