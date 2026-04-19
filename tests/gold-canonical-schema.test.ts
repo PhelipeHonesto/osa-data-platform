@@ -28,6 +28,15 @@ const INFRA_PATH = resolve(
   "infra",
   "gold-view-refresh.sql",
 );
+const OPERATOR_TYPE_MIGRATION_PATH = resolve(
+  __dirname,
+  "..",
+  "src",
+  "memory",
+  "schema",
+  "migrations",
+  "2026-04-19-003-operators-operator-type.sql",
+);
 
 interface TableBlock {
   name: string;
@@ -83,12 +92,13 @@ describe("gold canonical schema — operators.sql", () => {
     ]);
   });
 
-  it("operators has UUID id, type_tags, both trust-score columns, timestamps, schema_version", () => {
+  it("operators has UUID id, type_tags, operator_type, both trust-score columns, timestamps, schema_version", () => {
     const cols = tables.get("operators")?.columns ?? [];
     expect(cols).toEqual([
       "id",
       "canonical_name",
       "type_tags",
+      "operator_type",           // legal/operational discriminator (migration 2026-04-19-003)
       "headquarters_icao",
       "data_confidence_score",   // meta — how confident are we in the record (commit 4)
       "operator_trust_score",    // substantive — how trustworthy is the operator (commit 10)
@@ -96,6 +106,22 @@ describe("gold canonical schema — operators.sql", () => {
       "last_updated_at",
       "schema_version",
     ]);
+  });
+
+  it("operators.operator_type is a nullable TEXT with the ten ER-plan enum values", () => {
+    // Every enum member must appear in the CHECK list — keeps the declarative
+    // body + migration file + semantic YAML in lockstep.
+    for (const v of [
+      "part_135","part_121","part_91k","foreign_aoc","broker",
+      "billing_agent","financier","holding_co","defunct","trust_holder",
+    ]) {
+      expect(sql).toMatch(new RegExp(`'${v}'`));
+    }
+    // Column declaration must be plain TEXT with no NOT NULL and no DEFAULT —
+    // most rows stay NULL until a later audit pass.
+    expect(sql).toMatch(/\boperator_type\s+TEXT\s*\n?\s*CHECK/);
+    expect(sql).not.toMatch(/operator_type\s+TEXT[^,]*NOT\s+NULL/i);
+    expect(sql).not.toMatch(/operator_type\s+TEXT[^,]*DEFAULT/i);
   });
 
   it("operators rejects type_tags outside the approved taxonomy (sanity check on raw SQL)", () => {
@@ -124,6 +150,31 @@ describe("gold canonical schema — operators.sql", () => {
     expect(cols).toContain("status");
     expect(cols).toContain("candidate_matches");
     expect(sql).toMatch(/status[\s\S]*?'pending'[\s\S]*?'matched'[\s\S]*?'new_operator'[\s\S]*?'skipped'/);
+  });
+});
+
+describe("migration 2026-04-19-003 — operator_type", () => {
+  const sql = readFileSync(OPERATOR_TYPE_MIGRATION_PATH, "utf-8");
+
+  it("uses ADD COLUMN IF NOT EXISTS for idempotent re-runs", () => {
+    expect(sql).toMatch(/ALTER\s+TABLE\s+operators\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+operator_type\s+TEXT/i);
+  });
+
+  it("uses CREATE INDEX IF NOT EXISTS for the supporting index", () => {
+    expect(sql).toMatch(/CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+idx_operators_type\s+ON\s+operators\s*\(\s*operator_type\s*\)/i);
+  });
+
+  it("declares all ten enum values in the CHECK list", () => {
+    for (const v of [
+      "part_135","part_121","part_91k","foreign_aoc","broker",
+      "billing_agent","financier","holding_co","defunct","trust_holder",
+    ]) {
+      expect(sql).toMatch(new RegExp(`'${v}'`));
+    }
+  });
+
+  it("explicitly allows NULL via IS NULL in the CHECK (nullable column)", () => {
+    expect(sql).toMatch(/operator_type\s+IS\s+NULL\s+OR\s+operator_type\s+IN/i);
   });
 });
 

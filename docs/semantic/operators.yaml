@@ -34,6 +34,18 @@ key_dimensions:
   - name: type_tags
     description: Multi-valued categorisation. An operator can be charter + management simultaneously.
     values: [charter, fractional, corporate, air_ambulance, cargo, management, military, government]
+  - name: operator_type
+    description: >
+      Single-valued legal/operational classification. Orthogonal to type_tags —
+      type_tags says what they do (multi), operator_type says what they are (one).
+      Nullable; only well-known classifications are backfilled, the rest await audit.
+      Values — part_135: US charter cert; part_121: US airline cert; part_91k: US
+      fractional; foreign_aoc: non-US AOC; broker: DOT Part 295 broker (no cert);
+      billing_agent: IATA SIS billing entity, not an operator; financier: aircraft
+      finance co that holds title but does not operate; holding_co: parent-group
+      entity that does not fly; defunct: prior operator no longer operating;
+      trust_holder: legal trust holding aircraft on behalf of beneficial owners.
+    values: [part_135, part_121, part_91k, foreign_aoc, broker, billing_agent, financier, holding_co, defunct, trust_holder]
   - name: headquarters_icao
     description: ICAO of the registered or most-frequent operating base
 

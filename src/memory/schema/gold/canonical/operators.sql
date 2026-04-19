@@ -19,6 +19,18 @@ CREATE TABLE IF NOT EXISTS operators (
       'charter','fractional','corporate','air_ambulance',
       'cargo','management','military','government'
     ]::TEXT[]),
+  -- Single-valued legal/operational discriminator. Orthogonal to type_tags:
+  -- type_tags answers "what do they do" (charter + management), operator_type
+  -- answers "what are they legally" (part_135 vs broker vs billing_agent vs
+  -- financier). Nullable on purpose — only well-known classifications are
+  -- backfilled; remaining rows stay NULL until a later audit pass. See
+  -- docs/er-architecture-plan.md (build step 2) and docs/semantic/operators.yaml
+  -- for the enum value meanings.
+  operator_type TEXT
+    CHECK (operator_type IS NULL OR operator_type IN (
+      'part_135','part_121','part_91k','foreign_aoc','broker',
+      'billing_agent','financier','holding_co','defunct','trust_holder'
+    )),
   headquarters_icao TEXT,
   -- Computed 0.0–1.0. See the migration 2026-04-19-001 header + the
   -- docs/semantic/operators.yaml entry for the full distinction.
@@ -42,6 +54,8 @@ CREATE INDEX IF NOT EXISTS idx_operators_type_tags ON operators USING GIN (type_
 -- a no-op on pre-migration DBs that still have the old `trust_score`
 -- column; the migration renames the column first, then creates the
 -- new indexes on the new column names.
+-- idx_operators_type is created by migrations/2026-04-19-003-operators-
+-- operator-type.sql for the same reason (new-indexes-on-new-columns rule).
 
 -- Per-source link. Every (source, source_id) tuple maps to exactly one operator.
 -- The match_confidence + match_method + match_evidence triple is the audit
