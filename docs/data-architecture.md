@@ -189,6 +189,9 @@ This is mandatory. No "just trust the data" shortcuts. Every Platinum view must 
 - Build the entity resolution matching algorithm (tiered, weighted, calibrated on a labeled sample).
 - Build the manual review queue (could be a simple admin page + `operator_identities.match_confidence = 'pending'` state).
 - Migration: re-interpret today's `faa_operators` + `safety_ratings` through the canonical layer. Keep Silver tables as the source-of-truth for per-source facts — they don't go away.
+- Split `src/memory/schema-pg.sql` into the `src/memory/schema/` directory per Schema Evolution Rule 1.
+- Adopt migration naming per Schema Evolution Rule 2 (`YYYY-MM-DD-NNN-<kebab-name>.sql`).
+- Add the `platinum_refresh_log` table for Schema Evolution Rule 4 (even though the first Platinum view arrives in Phase 2 — get the plumbing in now).
 
 ### Phase 2 — Safety ratings on new structure + first Platinum view (2–3 days)
 
@@ -207,6 +210,134 @@ This is mandatory. No "just trust the data" shortcuts. Every Platinum view must 
 ### Phase 4+ — Other entities as needed
 
 Routes, deals, clients, airports, pilots. Same four-layer pattern, repeated.
+
+## Schema Evolution Principles
+
+These rules govern how the schema evolves as Phase 1-4+ land. They prevent a well-intentioned architecture from degrading into the exact mess it was designed to prevent.
+
+### Rule 1 — Schema is split by layer
+
+Starting in Phase 1, `src/memory/schema-pg.sql` is split:
+
+```
+src/memory/schema/
+  ├── silver/
+  │   ├── faa.sql              (faa_operators, faa_aircraft, ...)
+  │   ├── adsb.sql             (adsb_completed_legs, ...)
+  │   ├── safety-sources.sql   (argus_ratings_facts, wyvern_ratings_facts)
+  │   ├── market.sql
+  │   └── ...
+  ├── gold/
+  │   ├── operators.sql        (operators + identities + aliases)
+  │   ├── aircraft.sql         (Phase 3)
+  │   └── ...
+  ├── platinum/
+  │   ├── operator-views.sql
+  │   ├── fleet-views.sql      (Phase 3)
+  │   └── ...
+  └── migrations/
+      └── YYYY-MM-DD-NNN-<name>.sql
+```
+
+Each migration is a separate file. A `migrations.sql` orchestrator includes them in order.
+
+### Rule 2 — Migration naming
+
+Format: `YYYY-MM-DD-NNN-<kebab-case-name>.sql`
+
+```
+2026-04-28-001-operators-canonical.sql
+2026-04-28-002-operator-identities.sql
+2026-05-05-001-argus-ratings-facts.sql
+```
+
+- Numbers disambiguate multiple migrations on the same day.
+- Kebab-case names explain what the migration does at a glance.
+- **Never use just a number.** "Migration 38" tells nobody anything.
+
+### Rule 3 — Deprecation has a lifecycle
+
+A table cannot be "soft deprecated" and left to rot. Every deprecation requires:
+
+1. **Header comment** at the top of the table definition:
+   ```sql
+   -- DEPRECATED YYYY-MM-DD
+   -- Replaced by: <new table or view>
+   -- Readers migrate to: <new query target>
+   -- Scheduled removal: YYYY-MM-DD (minimum 6 weeks after deprecation)
+   ```
+2. **Code assertion**: ingestion that previously wrote to the table now throws or `log.error("attempted write to deprecated X, use Y instead")`.
+3. **Monitoring**: query logs flag any writes or reads from deprecated tables.
+4. **Actual removal**: on the scheduled removal date, `DROP` the table in a dedicated commit. Do not leave indefinitely.
+
+### Rule 4 — Platinum views expose freshness
+
+Every materialized view must include:
+
+```sql
+view_last_refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+```
+
+Every refresh operation logs to:
+
+```sql
+platinum_refresh_log (
+  view_name, refreshed_at, row_count, duration_ms, status, error
+)
+```
+
+Agents querying a Platinum view can check freshness:
+
+```sql
+SELECT MAX(view_last_refreshed_at) FROM operator_profile;
+```
+
+Stale views (>24h old for most, >1h for real-time) trigger alerts.
+
+### Rule 5 — Additive-first, destructive-last
+
+Phase order within any migration:
+
+1. Create new tables/views.
+2. Dual-write: writers populate **both** old and new tables.
+3. Migrate readers one-by-one to new tables.
+4. Verify: no reads from old table for 1 week.
+5. Mark old table `DEPRECATED` (Rule 3 lifecycle begins).
+6. 6 weeks later: `DROP` old table.
+
+**Never do 1 → 6 in a single migration.** The cost of dual-writing for 1-2 weeks is vastly lower than the cost of a broken reader you didn't know about.
+
+### Rule 6 — Platinum views are the ONLY agent interface
+
+Non-negotiable:
+
+- Agent code (`src/capabilities/`, `src/orchestrator/`) **never** reads Silver or Gold tables directly.
+- All agent reads → Platinum materialized views.
+- **CI grep check**: if an agent file imports a Silver or Gold table name, fail the build.
+
+Why: agent queries are the hardest to refactor. Lock them to the stable Platinum interface from day one. If a Platinum view is missing for a query class, build the view — don't shortcut by reading Silver.
+
+### Rule 7 — Source attribution is mandatory
+
+Every row in **Gold** must have:
+
+- `first_seen_at`
+- `last_verified_at`
+- `source_of_creation` (which identity source first created this record)
+
+Every row in **Silver** must have:
+
+- `scraped_at` or `ingested_at` (event time)
+- `source` (explicit, even when the table name implies it)
+- `scrape_run_id` or `ingest_run_id` (FK to a runs table for audit)
+
+Every row in **Bronze** must have:
+
+- `ingested_at`
+- `source_url` or `source_file`
+- `raw_sha256` (hash of the raw content)
+
+No shortcuts. If a source doesn't provide enough attribution, don't ingest until it does.
 
 ## References
 
