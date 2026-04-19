@@ -229,3 +229,81 @@ public brand and the actual operator are different.
   Dumont responses with a contextual caveat.
 - Does NOT gate recommendations (per commit 10 usage-boundary rule).
 - **Priority**: after Phase 2 booking data lands.
+
+---
+
+## Test suite hardening — future pass (parked 2026-04-19)
+
+The 2026-04-19 test audit (`git log --grep "test audit"` for the
+conversation record) found the suite genuinely defensive: zero
+mock-call assertions, zero snapshot coupling, balanced code:test
+ratios, no god-tests. Two gaps were closed immediately (monotonicity
+invariants on `operator_trust_score`, `migrate-pg` idempotency smoke).
+The items below are real but not urgent. Revisit when a regression
+touches one of them or when the test matrix gets rebalanced.
+
+### T1. Resolver mid-tier ambiguity coverage
+
+`src/memory/canonical/operator-resolver.ts` (411 LOC) has 12 tests in
+`tests/canonical-operator-resolver.test.ts`. Each tier of the decision
+tree (exact / high / medium / low / review / new) gets one test. What's
+missing: *interactions between candidates* — two medium matches with
+near-identical scores, a high + medium competing, ambiguity around the
+0.75 / 0.90 thresholds. The probabilistic paths aren't exercised at
+their boundaries.
+
+- Fix: add 4–6 cases covering (a) two medium scores within 0.02,
+  (b) a high score just barely crossing 0.90, (c) a low→medium
+  transition, (d) candidate ordering under ties.
+- **Priority**: before Phase 3 aircraft canonical lands — that work
+  will drive more resolver load and edge cases will surface.
+
+### T2. End-to-end coverage audit
+
+`tests/integration/end-to-end.test.ts` (420 LOC) exists but was not
+inspected during the audit. Unknown what path it exercises.
+
+- Fix: one-hour read to document what E2E tests actually do, and
+  confirm the Phase 1 full path (FAA ingest → canonical resolve →
+  safety backfill → trust-score compute) is covered somewhere. If
+  gaps, add a single narrative smoke-test.
+- **Priority**: before Stage 2 Gold views — those bake more paths
+  that deserve integration coverage.
+
+### T3. Integration-test gating review
+
+Four tests are gated on `SUPABASE_DATABASE_URL`:
+
+- `tests/pg-integration.test.ts`
+- `tests/scripts-dedup-operator-rows.test.ts`
+- `tests/scripts-fix-canonical-name.test.ts`
+- `tests/migrate-pg-smoke.test.ts`
+
+Vitest workers don't auto-load `.env`, so the default `npm test` skips
+all four. Manual validation is available via `set -a; source .env; set
++a; npm test`. No CI pipeline today picks these up.
+
+- Fix: decide whether to (a) add a vitest setup file that loads
+  `.env` and always runs these, (b) add a separate `npm run
+  test:integration` script that sets the env and runs the subset,
+  or (c) leave the pattern but document it in CLAUDE.md so reviewers
+  remember to run them pre-merge.
+- **Priority**: before first non-solo contributor — today the gating
+  matches OSA's solo-dev workflow fine.
+
+### T4. Prune candidates (low-priority, 100 LOC total)
+
+Two opportunities identified but deliberately left alone:
+
+- `tests/scripts-operators-review.test.ts:201` — 18 `parseTypeKey`
+  cases enumerate every keypad input. Could collapse to ~6
+  representative cases via a parametric loop, plus one "every
+  operator_type value reachable" assertion.
+- `tests/canonical-jaro-winkler.test.ts` + `tests/canonical-trigram.test.ts`
+  — two primitive-math tests (16 tests combined). Could merge into a
+  single `tests/canonical-primitives.test.ts` with ~6 representative
+  cases and drop ~80 LOC.
+
+- Fix: skip unless the suite genuinely needs trimming. Savings
+  (~100 LOC out of 13,657) are not worth the churn.
+- **Priority**: never, unless a rebalance forces it.

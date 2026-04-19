@@ -106,7 +106,7 @@ export interface FixResult {
   alias_already_existed: boolean;
 }
 
-async function applyFix(
+export async function applyFix(
   client: pg.PoolClient,
   args: FixArgs,
   existing: OperatorRow,

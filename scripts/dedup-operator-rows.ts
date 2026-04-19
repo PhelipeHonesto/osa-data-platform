@@ -151,7 +151,7 @@ async function loadSnapshot(client: pg.PoolClient, id: string): Promise<Operator
  * one side has a populated headquarters_icao, the other doesn't), the
  * invoker is responsible for choosing the right survivor up front.
  */
-async function dedupTransaction(
+export async function dedupTransaction(
   client: pg.PoolClient,
   args: DedupArgs,
 ): Promise<DedupCounts> {

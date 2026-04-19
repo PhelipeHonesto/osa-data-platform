@@ -195,3 +195,72 @@ describe("operatorTrustBreakdown — per-component explainability", () => {
     expect(b.identityStability).toBe(0.7);
   });
 });
+
+describe("monotonicity invariants — load-bearing for Stage 2 Gold views", () => {
+  const now = new Date("2026-04-19T00:00:00Z");
+
+  // Three representative starting states span the component space:
+  //   cold        — single non-safety source, recent, clean record
+  //   mid         — one safety source + one registry source, one accident, recent
+  //   mature      — two safety sources + FAA, clean, well-aged
+  const startingStates = [
+    {
+      label: "cold (single non-safety source, <1yr old, clean)",
+      input: {
+        sources: ["faa"] as const,
+        accidentsInLast10y: 0,
+        firstSeenAt: new Date("2026-04-01T00:00:00Z"),
+        now,
+      },
+    },
+    {
+      label: "mid (one safety + registry, one accident, recent)",
+      input: {
+        sources: ["wyvern", "faa"] as const,
+        accidentsInLast10y: 1,
+        firstSeenAt: new Date("2025-10-01T00:00:00Z"),
+        now,
+      },
+    },
+    {
+      label: "mature (two safety + registry, clean, aged)",
+      input: {
+        sources: ["argus", "wyvern", "faa"] as const,
+        accidentsInLast10y: 0,
+        firstSeenAt: new Date("2024-04-10T00:00:00Z"),
+        now,
+      },
+    },
+  ];
+
+  for (const { label, input } of startingStates) {
+    it(`adding a higher-tier safety source never decreases the score — ${label}`, () => {
+      const before = computeOperatorTrustScore(input);
+      // Add 'argus' (0.90 reliability, the top safety tier). If argus is
+      // already present, add 'isbao' so the set actually grows.
+      const extraSafety = input.sources.includes("argus") ? "isbao" : "argus";
+      const after = computeOperatorTrustScore({
+        ...input,
+        sources: [...input.sources, extraSafety],
+      });
+      expect(after).toBeGreaterThanOrEqual(before);
+    });
+
+    it(`a clean accident-free year of history never decreases the score — ${label}`, () => {
+      const before = computeOperatorTrustScore(input);
+      // Simulate one clean year elapsed: identity ages by 365 days and an
+      // old accident (if any) rolls off the 10-year window. Both of these
+      // changes are the caller's responsibility in practice (firstSeenAt
+      // doesn't move but `now` advances, and callers pre-filter the
+      // accident window). Model them here by holding firstSeenAt and
+      // advancing `now`, plus decrementing accidentsInLast10y.
+      const after = computeOperatorTrustScore({
+        sources: input.sources,
+        accidentsInLast10y: Math.max(0, input.accidentsInLast10y - 1),
+        firstSeenAt: input.firstSeenAt,
+        now: new Date(now.getTime() + 365 * 24 * 3600 * 1000),
+      });
+      expect(after).toBeGreaterThanOrEqual(before);
+    });
+  }
+});
