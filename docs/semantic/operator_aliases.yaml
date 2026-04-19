@@ -1,0 +1,42 @@
+table: operator_aliases
+layer: gold.canonical
+
+business_purpose: >
+  Every known name variant for a canonical operator. Legal names from FAA,
+  "doing business as" (DBA) trade names, customer-facing marketing brands,
+  and historical names from prior rebrands all live here. Lets the matcher
+  catch variants like "NetJets" (marketing) ↔ "NetJets Aviation Inc" (legal)
+  without having to re-score the whole search space.
+
+grain: one row per (operator_id, alias_normalized); UNIQUE enforced
+
+owner: solo:phelipe
+
+refresh_cadence: >
+  Appended during Phase 1 FAA backfill (commit 6: legal names from
+  faa_operators.name + DBA names from faa_operators.dba_name) and during
+  safety-ratings backfill (commit 7: names_as_provided from ARGUS/Wyvern
+  scrapes). Manual additions via the review CLI (commit 9).
+
+key_metrics:
+  - name: alias_count_per_operator
+    description: How many known names a single operator has (diagnostic — high counts may indicate over-merging)
+    source_column: derived (COUNT(*) BY operator_id)
+
+key_dimensions:
+  - name: alias_type
+    description: What kind of name variant this is
+    values: [legal, dba, marketing, historical]
+  - name: source
+    description: Which external system supplied the alias
+    values: [faa, argus, wyvern, isbao, adsb, manual]
+
+source_attribution: >
+  Each row carries its own source field naming which system supplied the
+  alias. alias is the raw text; alias_normalized is the lowercased /
+  punctuation-stripped form used for matching. first_seen_at is when OSA
+  first learned this variant.
+
+related_tables:
+  - operators: N:1 — the canonical entity this alias points to
+  - operator_identities: sibling — per-source IDs for the same canonical entity

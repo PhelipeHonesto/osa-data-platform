@@ -1,0 +1,54 @@
+table: operators
+layer: gold.canonical
+
+business_purpose: >
+  One row per real-world charter, fractional, corporate, or related aviation
+  operator. Canonical identity that unifies FAA, ARGUS, Wyvern, ADS-B, and
+  manual records. Every agent-facing view joins back to this id.
+
+grain: one row per distinct real-world operator, identified by UUID
+owner: solo:phelipe
+refresh_cadence: >
+  Written by Phase 1 backfill (commits 6-7), updated on subsequent ingestion
+  runs; trust_score recomputed by the batch job (commit 10).
+
+key_metrics:
+  - name: trust_score
+    description: Computed 0.0–1.0 confidence in this record
+    source_column: trust_score
+  - name: operator_age_days
+    description: Days since OSA first saw this operator
+    source_column: derived (NOW() - first_seen_at)
+  - name: staleness_days
+    description: Days since any field changed
+    source_column: derived (NOW() - last_updated_at)
+
+key_dimensions:
+  - name: type_tags
+    description: Multi-valued categorisation. An operator can be charter + management simultaneously.
+    values: [charter, fractional, corporate, air_ambulance, cargo, management, military, government]
+  - name: headquarters_icao
+    description: ICAO of the registered or most-frequent operating base
+
+source_attribution: >
+  Each row is backed by operator_identities rows naming the sources (faa,
+  argus, wyvern, isbao, adsb, manual). Join on operator_id for provenance.
+
+trust_score_inputs:
+  - component: source_reliability
+    weight: 0.40
+    description: Max across identities (faa=1.0, argus=0.9, wyvern=0.85, isbao=0.85, scrape=0.7, manual=0.5)
+  - component: data_freshness
+    weight: 0.25
+    description: Exp decay on most recent last_verified_at; half-life 180 days
+  - component: cross_source_agreement
+    weight: 0.20
+    description: min(1.0, n_distinct_sources / 3)
+  - component: completeness
+    weight: 0.15
+    description: Fraction of expected fields populated
+
+related_tables:
+  - operator_identities: 1:N — per-source linkage
+  - operator_aliases: 1:N — name variants
+  - operator_match_review: 1:N via resolution_operator_id — ambiguous matches

@@ -1,0 +1,47 @@
+table: operator_identities
+layer: gold.canonical
+
+business_purpose: >
+  Per-source linkage layer. Every time an external system's ID (FAA certificate
+  number, ARGUS operator ID, Wyvern AOC, etc.) maps to a canonical operator,
+  exactly one row lives here. match_confidence + match_method + match_evidence
+  is the audit trail for how the link was established.
+
+grain: one row per (source, source_id) tuple; UNIQUE enforced
+
+owner: solo:phelipe
+
+refresh_cadence: >
+  Written during Phase 1 backfill (commits 6-7). last_verified_at bumps on
+  every ingestion that re-confirms the link. match_confidence='manual' is
+  set only by the manual review CLI (commit 9).
+
+key_metrics:
+  - name: match_confidence_tier
+    description: Quality of the canonical link
+    source_column: match_confidence
+  - name: verification_age_days
+    description: Days since this link was last re-confirmed
+    source_column: derived (NOW() - last_verified_at)
+
+key_dimensions:
+  - name: source
+    description: Which external system this identity came from
+    values: [faa, argus, wyvern, isbao, adsb, manual]
+  - name: match_confidence
+    description: Confidence tier assigned by the matcher or reviewer
+    values: [exact, high, medium, low, manual]
+  - name: match_method
+    description: How the link was decided. Free-text but values cluster into a small set.
+    values: [cert_number, name_fuzzy, manual, address_match, icao_match]
+
+source_attribution: >
+  Self — each row is its own attribution. The source field names where the
+  scraped/ingested record came from; source_id is their primary key in their
+  system; name_as_provided is the name text they used; match_evidence JSONB
+  stores the weighted signal breakdown the matcher produced.
+
+related_tables:
+  - operators: N:1 — the canonical entity this identity links to
+  - operator_aliases: N:N (indirectly via operator_id) — name variants surfaced by this source
+  - operator_match_review: sibling — pending/ambiguous matches before they land here with 'manual' confidence
