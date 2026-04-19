@@ -20,18 +20,28 @@ CREATE TABLE IF NOT EXISTS operators (
       'cargo','management','military','government'
     ]::TEXT[]),
   headquarters_icao TEXT,
-  -- Computed 0.0–1.0 confidence in this record. Formula lives in the Phase 1
-  -- trust-score job (commit 10); defaults to 0 until first computation.
-  trust_score NUMERIC(3, 2) NOT NULL DEFAULT 0.0
-    CHECK (trust_score >= 0.0 AND trust_score <= 1.0),
+  -- Computed 0.0–1.0. See the migration 2026-04-19-001 header + the
+  -- docs/semantic/operators.yaml entry for the full distinction.
+  --   data_confidence_score: how much we trust THIS RECORD (meta).
+  --   operator_trust_score:  how trustworthy is this OPERATOR (substantive).
+  -- Both default to 0 until the trust-score batch job populates them.
+  data_confidence_score NUMERIC(3, 2) NOT NULL DEFAULT 0.0
+    CHECK (data_confidence_score >= 0.0 AND data_confidence_score <= 1.0),
+  operator_trust_score NUMERIC(3, 2) NOT NULL DEFAULT 0.0
+    CHECK (operator_trust_score >= 0.0 AND operator_trust_score <= 1.0),
   first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   schema_version INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_operators_name ON operators(canonical_name);
 CREATE INDEX IF NOT EXISTS idx_operators_hq ON operators(headquarters_icao);
-CREATE INDEX IF NOT EXISTS idx_operators_trust ON operators(trust_score);
 CREATE INDEX IF NOT EXISTS idx_operators_type_tags ON operators USING GIN (type_tags);
+-- idx_operators_data_confidence + idx_operators_trust are created by
+-- migrations/2026-04-19-001-operators-split-trust-score.sql. They can't
+-- live here because the CREATE-TABLE-IF-NOT-EXISTS statement above is
+-- a no-op on pre-migration DBs that still have the old `trust_score`
+-- column; the migration renames the column first, then creates the
+-- new indexes on the new column names.
 
 -- Per-source link. Every (source, source_id) tuple maps to exactly one operator.
 -- The match_confidence + match_method + match_evidence triple is the audit

@@ -13,9 +13,16 @@ refresh_cadence: >
   runs; trust_score recomputed by the batch job (commit 10).
 
 key_metrics:
-  - name: trust_score
-    description: Computed 0.0–1.0 confidence in this record
-    source_column: trust_score
+  - name: data_confidence_score
+    description: Computed 0.0–1.0 confidence that the CANONICAL RECORD is right (meta).
+    source_column: data_confidence_score
+    usage: internal_ranking_and_context, not_hard_filter
+    purpose: How confident are we in the record? Driven by source reliability, freshness, cross-source agreement, completeness.
+  - name: operator_trust_score
+    description: Computed 0.0–1.0 trust in the OPERATOR as an entity (substantive).
+    source_column: operator_trust_score
+    usage: internal_ranking_and_context, not_hard_filter
+    purpose: How trustworthy is this operator? Driven by safety ratings, accident history, multi-source corroboration, identity stability. OSA is a charter brokerage — these scores never gate customer access to any legally-operating carrier.
   - name: operator_age_days
     description: Days since OSA first saw this operator
     source_column: derived (NOW() - first_seen_at)
@@ -34,7 +41,7 @@ source_attribution: >
   Each row is backed by operator_identities rows naming the sources (faa,
   argus, wyvern, isbao, adsb, manual). Join on operator_id for provenance.
 
-trust_score_inputs:
+data_confidence_score_inputs:
   - component: source_reliability
     weight: 0.40
     description: Max across identities (faa=1.0, argus=0.9, wyvern=0.85, isbao=0.85, scrape=0.7, manual=0.5)
@@ -47,6 +54,20 @@ trust_score_inputs:
   - component: completeness
     weight: 0.15
     description: Fraction of expected fields populated
+
+operator_trust_score_inputs:
+  - component: safety_rating
+    weight: 0.40
+    description: Max across SAFETY-source reliability only (argus=0.90, wyvern=0.85, isbao=0.85). FAA registry presence does not contribute — not a safety signal.
+  - component: accident_history
+    weight: 0.25
+    description: "1.0 - min(1.0, accidents_last_10y * 0.15). 0 accidents → 1.0, 7+ → 0.0. Phase-1 limitation: only accidents on FAA-linked aircraft count; non-US + synthetic-cert operators read as zero accidents."
+  - component: source_count
+    weight: 0.20
+    description: min(1.0, distinct_source_count / 3). Multi-source corroboration signal.
+  - component: identity_stability
+    weight: 0.15
+    description: "v0 proxy: 1.0 if 2+ sources AND known ≥365 days; 0.7 if 2+ sources newer; 0.5 otherwise. Refine when aircraft_operator_history + operator_events land."
 
 related_tables:
   - operator_identities: 1:N — per-source linkage

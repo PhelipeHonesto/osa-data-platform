@@ -1,16 +1,23 @@
 /**
- * Trust score formula per docs/semantic/operators.yaml and the Phase 1 plan.
+ * Data-confidence score ("how confident are we in THIS RECORD?").
  *
- *   trust_score = 0.40 * source_reliability
- *               + 0.25 * data_freshness
- *               + 0.20 * cross_source_agreement
- *               + 0.15 * completeness
+ *   data_confidence_score = 0.40 * source_reliability
+ *                         + 0.25 * data_freshness
+ *                         + 0.20 * cross_source_agreement
+ *                         + 0.15 * completeness
  *
  * All four components are 0.0–1.0. Output is clamped to [0, 1] and rounded
  * to 2 decimal places (matches the NUMERIC(3, 2) column in operators).
  *
  * Monotonicity invariant: adding a *more-reliable* source identity cannot
  * decrease the score. The tests cover this explicitly.
+ *
+ * Separate from operator_trust_score (see operator-trust-score.ts), which
+ * answers the substantive question "How trustworthy is this operator as
+ * an entity?" — safety ratings, accident history, source count, identity
+ * stability. The two scores are orthogonal: an operator can have high
+ * data_confidence (FAA + ARGUS both say the same thing, recently) and
+ * low operator_trust (recent accidents, no safety rating) or vice versa.
  *
  * Pure functions, no DB, no time calls beyond what the caller passes.
  */
@@ -75,7 +82,7 @@ export function completenessScore(populated: number, expected: number): number {
   return Math.max(0, Math.min(1, populated / expected));
 }
 
-export function computeTrustScore(input: TrustScoreInputs): number {
+export function computeDataConfidenceScore(input: TrustScoreInputs): number {
   const sr = sourceReliability(input.sources);
   const fr = freshnessScore(input.mostRecentVerifiedAt, input.now);
   const ag = agreementScore(input.sources);

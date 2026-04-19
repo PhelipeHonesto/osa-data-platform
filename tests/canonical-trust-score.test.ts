@@ -4,7 +4,7 @@ import {
   freshnessScore,
   agreementScore,
   completenessScore,
-  computeTrustScore,
+  computeDataConfidenceScore,
   SOURCE_RELIABILITY,
   FRESHNESS_HALF_LIFE_DAYS,
 } from "../src/memory/canonical/trust-score.js";
@@ -75,12 +75,12 @@ describe("completenessScore", () => {
   });
 });
 
-describe("computeTrustScore", () => {
+describe("computeDataConfidenceScore", () => {
   const now = new Date("2026-04-18T00:00:00Z");
   const freshVerified = new Date("2026-04-18T00:00:00Z");
 
   it("all-zero input → 0", () => {
-    expect(computeTrustScore({
+    expect(computeDataConfidenceScore({
       sources: [],
       mostRecentVerifiedAt: null,
       now,
@@ -90,7 +90,7 @@ describe("computeTrustScore", () => {
   });
 
   it("FAA-only, just-verified, all fields populated → near 1.0", () => {
-    const s = computeTrustScore({
+    const s = computeDataConfidenceScore({
       sources: ["faa"],
       mostRecentVerifiedAt: freshVerified,
       now,
@@ -102,7 +102,7 @@ describe("computeTrustScore", () => {
   });
 
   it("all signals perfect (3+ sources, fresh, complete) → 1.0", () => {
-    expect(computeTrustScore({
+    expect(computeDataConfidenceScore({
       sources: ["faa", "argus", "wyvern"],
       mostRecentVerifiedAt: freshVerified,
       now,
@@ -112,14 +112,14 @@ describe("computeTrustScore", () => {
   });
 
   it("monotonicity: adding a second more-reliable source cannot decrease the score", () => {
-    const before = computeTrustScore({
+    const before = computeDataConfidenceScore({
       sources: ["manual"],
       mostRecentVerifiedAt: freshVerified,
       now,
       populatedFields: 4,
       expectedFields: 4,
     });
-    const after = computeTrustScore({
+    const after = computeDataConfidenceScore({
       sources: ["manual", "faa"],
       mostRecentVerifiedAt: freshVerified,
       now,
@@ -130,7 +130,7 @@ describe("computeTrustScore", () => {
   });
 
   it("rounds to 2 decimal places (matches NUMERIC(3,2) column)", () => {
-    const s = computeTrustScore({
+    const s = computeDataConfidenceScore({
       sources: ["wyvern"],
       mostRecentVerifiedAt: freshVerified,
       now,
@@ -142,7 +142,7 @@ describe("computeTrustScore", () => {
   });
 
   it("never returns above 1.0 even with extreme inputs", () => {
-    const s = computeTrustScore({
+    const s = computeDataConfidenceScore({
       sources: ["faa", "argus", "wyvern", "isbao", "adsb"],
       mostRecentVerifiedAt: new Date(now.getTime() + 1e10),
       now,

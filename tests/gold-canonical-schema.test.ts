@@ -83,14 +83,15 @@ describe("gold canonical schema — operators.sql", () => {
     ]);
   });
 
-  it("operators has UUID id, type_tags, trust_score, timestamps, schema_version", () => {
+  it("operators has UUID id, type_tags, both trust-score columns, timestamps, schema_version", () => {
     const cols = tables.get("operators")?.columns ?? [];
     expect(cols).toEqual([
       "id",
       "canonical_name",
       "type_tags",
       "headquarters_icao",
-      "trust_score",
+      "data_confidence_score",   // meta — how confident are we in the record (commit 4)
+      "operator_trust_score",    // substantive — how trustworthy is the operator (commit 10)
       "first_seen_at",
       "last_updated_at",
       "schema_version",
