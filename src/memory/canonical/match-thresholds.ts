@@ -30,6 +30,18 @@ export const THRESHOLDS: MatchThresholds = {
 };
 
 /**
+ * Ambiguity guard: when the top candidate beats the runner-up by less than
+ * this epsilon, the match is considered ambiguous and gets downgraded to
+ * the review queue regardless of absolute tier. Calibrated in commit 8.
+ *
+ * Rationale: "top score 0.87, second score 0.85" is the case where the
+ * matcher is functionally guessing — both candidates are plausibly the
+ * same real-world operator, and letting the slightly-higher score win
+ * auto-silently is exactly the risk MDM is supposed to prevent.
+ */
+export const AMBIGUITY_EPSILON = 0.02;
+
+/**
  * Confidence tier a weighted-match score falls into. "exact" is reserved
  * for deterministic (shared-ID) matches and is assigned by the resolver,
  * not by this function.
