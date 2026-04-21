@@ -287,7 +287,7 @@ Context engineering is the discipline of architecting the full information envir
 - **OSA-Brain** (Obsidian vault, 140+ summaries) — long-term founder context.
 - **CLAUDE.md** — project context.
 - **.claude/lessons.md** — learned-from-experience context.
-- **docs/WORKFLOW.md** — operational context.
+- **WORKFLOW.md** — operational context.
 - **MCP tool descriptions** — tool context.
 - **Agent orchestration** (Intake → Sourcing → Quote → Scenario → Guardian) — conversation-state context.
 
