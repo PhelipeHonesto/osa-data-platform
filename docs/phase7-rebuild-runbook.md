@@ -3,7 +3,7 @@
 Replaces the contaminated `adsb_completed_legs` (see `docs/known-issues.md`)
 with clean legs detected by the fixed `adsblol-ingest.ts` (commit
 8a09e23). Reads tars from S3 (restored out of Glacier per
-`docs/phase7-restore-log.md`) rather than re-downloading from GitHub.
+`docs/archive/2026-04/phase7-restore-log.md`) rather than re-downloading from GitHub.
 
 ## When to run
 
@@ -18,7 +18,7 @@ with clean legs detected by the fixed `adsblol-ingest.ts` (commit
   than the original ~33-hour GitHub pull, but per-day extract +
   leg-detect work is unchanged.
 - Sentry operational (so failures page automatically).
-- `docs/phase7-schema-apply.md` ALTER statements applied to Supabase
+- `docs/archive/2026-04/phase7-schema-apply.md` ALTER statements applied to Supabase
   (one-time, per-check verify columns).
 
 ## Pre-flight
@@ -226,8 +226,8 @@ When all pass:
 ## Related docs
 
 - `docs/known-issues.md` — what contamination looks like
-- `docs/phase7-timestamp-bugfix.md` — the underlying fix
-- `docs/phase7-restore-log.md` — Glacier bulk restore
-- `docs/phase7-schema-apply.md` — one-time Supabase ALTER for verify columns
+- `docs/archive/2026-04/phase7-timestamp-bugfix.md` — the underlying fix
+- `docs/archive/2026-04/phase7-restore-log.md` — Glacier bulk restore
+- `docs/archive/2026-04/phase7-schema-apply.md` — one-time Supabase ALTER for verify columns
 - S3-first ingestion path: see the header comments in
   `src/ingestion/history-backfill.ts` (no separate doc).
