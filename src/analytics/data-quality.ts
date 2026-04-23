@@ -252,29 +252,9 @@ export function runFullQualityReport(db: Database.Database): QualityReport {
   return report;
 }
 
-/** Get the latest quality report from the database (for API). */
-export function getLatestQualityReport(db: Database.Database): Record<string, unknown> | null {
-  const row = db.prepare(`
-    SELECT * FROM data_quality_runs ORDER BY id DESC LIMIT 1
-  `).get() as Record<string, unknown> | undefined;
-
-  if (!row) return null;
-
-  return {
-    runAt: row.run_at,
-    overallStatus: row.overall_status,
-    checks: {
-      malformedTails: row.malformed_tails,
-      invalidIcao: row.invalid_icao,
-      duplicateLegs: row.duplicate_legs,
-      orphanedRecords: row.orphaned_records,
-      emptyFields: row.empty_fields,
-      staleData: row.stale_data,
-      anomalies: row.anomalies,
-    },
-    details: row.details ? JSON.parse(row.details as string) : null,
-  };
-}
+// Agent-side read path lives in src/analytics/quality-queries.ts (see file-level
+// comment there). `data-quality.ts` stays compute-only so it can migrate
+// cleanly to osa-data-platform at Phase 3 split time.
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
