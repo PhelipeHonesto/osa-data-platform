@@ -35,8 +35,8 @@
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { resolve, join } from "node:path";
-import { getDb, closeDb } from "../memory/database.js";
-import { runMigrations } from "../memory/migrations.js";
+import { getDb, closeDb } from "../db/database.js";
+import { runMigrations } from "../db/migrations.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 

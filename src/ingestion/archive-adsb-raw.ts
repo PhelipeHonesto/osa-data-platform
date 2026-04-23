@@ -18,8 +18,8 @@ import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 import { S3Client, HeadObjectCommand, PutObjectCommand, type StorageClass } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
-import { getDatabase, setPgBridge } from "../memory/database.js";
-import { getPgBridge, type DbBridge } from "../memory/pg-database.js";
+import { getDatabase, setPgBridge } from "../db/database.js";
+import { getPgBridge, type DbBridge } from "../db/pg-database.js";
 import { childLogger } from "../utils/logger.js";
 
 const log = childLogger("archive-adsb");

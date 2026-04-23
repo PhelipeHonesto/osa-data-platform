@@ -4,7 +4,7 @@ import {
   pickHeadquartersIcao,
   mergeTypeTags,
   SOURCE_PRIORITY,
-} from "../src/memory/canonical/operator-field-priority.js";
+} from "../src/entity-resolution/operator-field-priority.js";
 
 describe("pickCanonicalName", () => {
   it("returns null for empty candidates", () => {

@@ -7,7 +7,7 @@ import {
   computeDataConfidenceScore,
   SOURCE_RELIABILITY,
   FRESHNESS_HALF_LIFE_DAYS,
-} from "../src/memory/canonical/trust-score.js";
+} from "../src/entity-resolution/trust-score.js";
 
 describe("sourceReliability", () => {
   it("returns 0 for no sources", () => {

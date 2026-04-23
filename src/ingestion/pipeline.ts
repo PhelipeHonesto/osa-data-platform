@@ -22,7 +22,7 @@
 
 import { execSync } from "node:child_process";
 import { resolve } from "node:path";
-import { createStandaloneClient } from "../memory/pg-database.js";
+import { createStandaloneClient } from "../db/pg-database.js";
 import { childLogger } from "../utils/logger.js";
 import { initSentry } from "../utils/sentry.js";
 

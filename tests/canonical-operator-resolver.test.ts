@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 import type pg from "pg";
-import { resolveOperator, firstSignificantWord } from "../src/memory/canonical/operator-resolver.js";
+import { resolveOperator, firstSignificantWord } from "../src/entity-resolution/operator-resolver.js";
 
 // ── Mock client ──────────────────────────────────────────────────────────
 

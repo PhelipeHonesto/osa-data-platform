@@ -7,8 +7,8 @@
  * Run via: npm run ingest:icao
  */
 
-import { getDatabase, setPgBridge } from "../memory/database.js";
-import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
+import { getDatabase, setPgBridge } from "../db/database.js";
+import { getPgBridge, closePg, type DbBridge } from "../db/pg-database.js";
 import { childLogger } from "../utils/logger.js";
 
 const log = childLogger("icao-hex");

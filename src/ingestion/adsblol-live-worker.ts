@@ -44,10 +44,10 @@
  *   DATABASE_TYPE=postgres npx tsx src/ingestion/adsblol-live-worker.ts --single-cycle
  */
 
-import { getDatabase, setPgBridge } from "../memory/database.js";
-import { getPgBridge, closePg } from "../memory/pg-database.js";
-import type { DbBridge } from "../memory/pg-database.js";
-import { bulkUpsert } from "../memory/bulk-upsert.js";
+import { getDatabase, setPgBridge } from "../db/database.js";
+import { getPgBridge, closePg } from "../db/pg-database.js";
+import type { DbBridge } from "../db/pg-database.js";
+import { bulkUpsert } from "../db/bulk-upsert.js";
 import { haversine } from "../utils/haversine.js";
 import { childLogger } from "../utils/logger.js";
 import { initSentry, installProcessHandlers } from "../utils/sentry.js";

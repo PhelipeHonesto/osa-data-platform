@@ -15,7 +15,7 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { getDb, closeDb } from "../memory/database.js";
+import { getDb, closeDb } from "../db/database.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 

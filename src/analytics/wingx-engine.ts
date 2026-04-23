@@ -9,9 +9,9 @@
  *      npm run analytics:build -- --from 2026-01 --to 2026-03
  */
 
-import { getDatabase, closeDb, setPgBridge } from "../memory/database.js";
-import type { DbBridge } from "../memory/pg-database.js";
-import { bulkUpsert } from "../memory/bulk-upsert.js";
+import { getDatabase, closeDb, setPgBridge } from "../db/database.js";
+import type { DbBridge } from "../db/pg-database.js";
+import { bulkUpsert } from "../db/bulk-upsert.js";
 import { childLogger } from "../utils/logger.js";
 
 const log = childLogger("analytics");
@@ -486,7 +486,7 @@ export async function rebuildAll(db: DbBridge, fromMonth: string, toMonth: strin
 async function main() {
   // Init PG bridge if needed
   if (process.env.DATABASE_TYPE === "postgres") {
-    const { getPgBridge } = await import("../memory/pg-database.js");
+    const { getPgBridge } = await import("../db/pg-database.js");
     setPgBridge(getPgBridge());
   }
 

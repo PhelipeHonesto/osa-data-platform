@@ -24,7 +24,7 @@ import { execSync } from "node:child_process";
 import path from "node:path";
 import pg from "pg";
 import Cursor from "pg-cursor";
-import { createStandaloneClient } from "../memory/pg-database.js";
+import { createStandaloneClient } from "../db/pg-database.js";
 import { S3Client, PutObjectCommand, type StorageClass } from "@aws-sdk/client-s3";
 import parquet from "@dsnp/parquetjs";
 import { childLogger } from "../utils/logger.js";

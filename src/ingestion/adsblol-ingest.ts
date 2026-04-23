@@ -16,9 +16,9 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
-import { getDatabase, setPgBridge } from "../memory/database.js";
-import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
-import { bulkUpsert } from "../memory/bulk-upsert.js";
+import { getDatabase, setPgBridge } from "../db/database.js";
+import { getPgBridge, closePg, type DbBridge } from "../db/pg-database.js";
+import { bulkUpsert } from "../db/bulk-upsert.js";
 import { haversine } from "../utils/haversine.js";
 import { childLogger } from "../utils/logger.js";
 

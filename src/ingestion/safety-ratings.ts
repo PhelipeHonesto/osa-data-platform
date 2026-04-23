@@ -20,8 +20,8 @@
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getDatabase, setPgBridge } from "../memory/database.js";
-import { getPgBridge, closePg } from "../memory/pg-database.js";
+import { getDatabase, setPgBridge } from "../db/database.js";
+import { getPgBridge, closePg } from "../db/pg-database.js";
 import { childLogger } from "../utils/logger.js";
 import { fuzzyMatch } from "./safety-ratings-fuzzy.js";
 

@@ -16,7 +16,7 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { resolve, join } from "node:path";
-import { getDb, closeDb } from "../memory/database.js";
+import { getDb, closeDb } from "../db/database.js";
 import { childLogger } from "../utils/logger.js";
 
 const log = childLogger("airmen");

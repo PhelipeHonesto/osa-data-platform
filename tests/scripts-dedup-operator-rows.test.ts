@@ -17,7 +17,7 @@ import {
   pickSurvivor,
   type OperatorSnapshot,
 } from "../scripts/dedup-operator-rows.js";
-import { getPool } from "../src/memory/pg-database.js";
+import { getPool } from "../src/db/pg-database.js";
 
 const hasPg = !!process.env["SUPABASE_DATABASE_URL"];
 const describeIf = hasPg ? describe : describe.skip;

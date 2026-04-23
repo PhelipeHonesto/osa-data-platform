@@ -10,8 +10,8 @@
  * Postgres via the DbBridge. Invoked from pipeline.ts as cron step 3.
  */
 
-import { getDatabase, setPgBridge } from "../memory/database.js";
-import { getPgBridge, closePg } from "../memory/pg-database.js";
+import { getDatabase, setPgBridge } from "../db/database.js";
+import { getPgBridge, closePg } from "../db/pg-database.js";
 import { childLogger } from "../utils/logger.js";
 
 const log = childLogger("update-graph");
@@ -28,7 +28,7 @@ async function main(): Promise<void> {
   console.log(`[graph] Connected to Postgres`);
 
   // ── Idempotent schema safety net ─────────────────────────────────────────
-  // Tables should exist from src/memory/schema/; these CREATE IF NOT EXISTS / ALTER
+  // Tables should exist from schema/; these CREATE IF NOT EXISTS / ALTER
   // IF NOT EXISTS statements keep re-runs safe in environments that haven't
   // had the schema migration applied yet.
   await db.exec(`

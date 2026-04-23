@@ -8,7 +8,7 @@ import {
   computeIdentityStabilityScore,
   computeOperatorTrustScore,
   operatorTrustBreakdown,
-} from "../src/memory/canonical/operator-trust-score.js";
+} from "../src/entity-resolution/operator-trust-score.js";
 
 describe("weights sum to 1", () => {
   it("matches the commit 10 design (0.40 + 0.25 + 0.20 + 0.15)", () => {

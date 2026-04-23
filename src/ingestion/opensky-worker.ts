@@ -10,9 +10,9 @@
  * Can also run standalone: npm run opensky.
  */
 
-import { getDatabase, setPgBridge } from "../memory/database.js";
-import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
-import { bulkUpsert } from "../memory/bulk-upsert.js";
+import { getDatabase, setPgBridge } from "../db/database.js";
+import { getPgBridge, closePg, type DbBridge } from "../db/pg-database.js";
+import { bulkUpsert } from "../db/bulk-upsert.js";
 import { haversine } from "../utils/haversine.js";
 import { childLogger } from "../utils/logger.js";
 import { initSentry, installProcessHandlers, flushSentry } from "../utils/sentry.js";

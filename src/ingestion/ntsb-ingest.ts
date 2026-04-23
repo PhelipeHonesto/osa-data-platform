@@ -15,7 +15,7 @@ import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { createInterface } from "node:readline";
 import { resolve, join } from "node:path";
 import type Database from "better-sqlite3";
-import { getDb, closeDb } from "../memory/database.js";
+import { getDb, closeDb } from "../db/database.js";
 import { childLogger } from "../utils/logger.js";
 
 const log = childLogger("ntsb");

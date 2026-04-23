@@ -34,8 +34,8 @@ import {
   ListObjectsV2Command,
   GetObjectCommand,
 } from "@aws-sdk/client-s3";
-import { getDatabase, setPgBridge } from "../memory/database.js";
-import { getPgBridge, closePg, type DbBridge } from "../memory/pg-database.js";
+import { getDatabase, setPgBridge } from "../db/database.js";
+import { getPgBridge, closePg, type DbBridge } from "../db/pg-database.js";
 import {
   parseTraceFile,
   detectLegs,

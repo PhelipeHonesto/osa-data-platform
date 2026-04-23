@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { trigrams, trigramSimilarity } from "../src/memory/canonical/trigram.js";
+import { trigrams, trigramSimilarity } from "../src/entity-resolution/trigram.js";
 
 describe("trigrams", () => {
   it("generates padded trigrams (leading/trailing spaces)", () => {

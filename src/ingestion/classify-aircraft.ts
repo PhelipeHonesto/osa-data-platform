@@ -9,8 +9,8 @@
  * against Postgres via the DbBridge. Invoked from pipeline.ts as cron step 2.
  */
 
-import { getDatabase, setPgBridge } from "../memory/database.js";
-import { getPgBridge, closePg } from "../memory/pg-database.js";
+import { getDatabase, setPgBridge } from "../db/database.js";
+import { getPgBridge, closePg } from "../db/pg-database.js";
 import { childLogger } from "../utils/logger.js";
 
 const log = childLogger("classify");

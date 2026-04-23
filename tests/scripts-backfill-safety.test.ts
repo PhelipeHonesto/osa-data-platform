@@ -6,7 +6,7 @@ import {
   tallyResult,
   type SafetyRatingRow,
 } from "../scripts/backfill-operators-canonical-safety.js";
-import type { ResolverResult } from "../src/memory/canonical/operator-resolver.js";
+import type { ResolverResult } from "../src/entity-resolution/operator-resolver.js";
 
 const baseRow: SafetyRatingRow = {
   id: 1,

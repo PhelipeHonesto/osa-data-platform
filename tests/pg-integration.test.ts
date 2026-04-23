@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { convertSql, PgSyncBridge, getPgBridge } from "../src/memory/pg-database.js";
+import { convertSql, PgSyncBridge, getPgBridge } from "../src/db/pg-database.js";
 
 const hasPg = !!process.env.SUPABASE_DATABASE_URL;
 const describeIf = hasPg ? describe : describe.skip;
@@ -109,7 +109,7 @@ describe("getDatabase factory", () => {
   it("returns better-sqlite3 when DATABASE_TYPE is not postgres", async () => {
     const originalType = process.env.DATABASE_TYPE;
     delete process.env.DATABASE_TYPE;
-    const { getDatabase } = await import("../src/memory/database.js");
+    const { getDatabase } = await import("../src/db/database.js");
     const db = getDatabase();
     // better-sqlite3 has a .pragma method
     expect(typeof db.prepare).toBe("function");

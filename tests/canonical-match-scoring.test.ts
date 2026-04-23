@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { computeNameSim, scoreMatch } from "../src/memory/canonical/match-scoring.js";
+import { computeNameSim, scoreMatch } from "../src/entity-resolution/match-scoring.js";
 import {
   tierOf,
   THRESHOLDS,
   REQUIRE_SIGNAL_AT_TIERS,
   hasCorroboratingSignal,
-} from "../src/memory/canonical/match-thresholds.js";
+} from "../src/entity-resolution/match-thresholds.js";
 
 describe("computeNameSim", () => {
   it("returns 1 for identical names", () => {
