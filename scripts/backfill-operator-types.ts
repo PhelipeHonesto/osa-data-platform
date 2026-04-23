@@ -20,7 +20,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import pg from "pg";
-import { getPool, closePg } from "../src/memory/pg-database.js";
+import { getPool, closePg } from "../src/db/pg-database.js";
 import { initSentry, flushSentry, installProcessHandlers } from "../src/utils/sentry.js";
 import { childLogger } from "../src/utils/logger.js";
 

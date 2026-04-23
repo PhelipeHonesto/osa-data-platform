@@ -25,13 +25,13 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import pg from "pg";
-import { getPool, closePg } from "../src/memory/pg-database.js";
-import { computeDataConfidenceScore } from "../src/memory/canonical/trust-score.js";
+import { getPool, closePg } from "../src/db/pg-database.js";
+import { computeDataConfidenceScore } from "../src/entity-resolution/trust-score.js";
 import {
   computeOperatorTrustScore,
   operatorTrustBreakdown,
-} from "../src/memory/canonical/operator-trust-score.js";
-import type { Source } from "../src/memory/canonical/operator-field-priority.js";
+} from "../src/entity-resolution/operator-trust-score.js";
+import type { Source } from "../src/entity-resolution/operator-field-priority.js";
 import { childLogger } from "../src/utils/logger.js";
 
 const log = childLogger("operators-trust-scores");

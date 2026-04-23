@@ -43,7 +43,7 @@ import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import pg from "pg";
-import { getPool, closePg } from "../src/memory/pg-database.js";
+import { getPool, closePg } from "../src/db/pg-database.js";
 import { childLogger } from "../src/utils/logger.js";
 
 const log = childLogger("calibrate-thresholds");

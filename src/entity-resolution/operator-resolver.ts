@@ -35,7 +35,7 @@
 
 import pg from "pg";
 import { randomUUID } from "node:crypto";
-import { getPool } from "../pg-database.js";
+import { getPool } from "../db/pg-database.js";
 import { computeNameSim, scoreMatch, type MatchSignals } from "./match-scoring.js";
 import {
   AMBIGUITY_EPSILON,

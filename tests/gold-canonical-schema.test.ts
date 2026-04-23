@@ -11,8 +11,6 @@ import { resolve } from "node:path";
 const CANONICAL_PATH = resolve(
   __dirname,
   "..",
-  "src",
-  "memory",
   "schema",
   "gold",
   "canonical",
@@ -21,8 +19,6 @@ const CANONICAL_PATH = resolve(
 const INFRA_PATH = resolve(
   __dirname,
   "..",
-  "src",
-  "memory",
   "schema",
   "gold",
   "infra",
@@ -31,8 +27,6 @@ const INFRA_PATH = resolve(
 const OPERATOR_TYPE_MIGRATION_PATH = resolve(
   __dirname,
   "..",
-  "src",
-  "memory",
   "schema",
   "migrations",
   "2026-04-19-003-operators-operator-type.sql",

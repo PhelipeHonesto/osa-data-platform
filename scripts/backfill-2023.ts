@@ -28,8 +28,8 @@
 import { readFileSync, appendFileSync, mkdirSync, statfsSync } from "node:fs";
 import { S3Client, HeadBucketCommand, type StorageClass } from "@aws-sdk/client-s3";
 import { archiveDay } from "../src/ingestion/archive-adsb-raw.js";
-import { getDatabase, setPgBridge } from "../src/memory/database.js";
-import { getPgBridge, closePg } from "../src/memory/pg-database.js";
+import { getDatabase, setPgBridge } from "../src/db/database.js";
+import { getPgBridge, closePg } from "../src/db/pg-database.js";
 
 const PROBE_FILE = "/tmp/adsb-2023-probe.json";
 const S3_BUCKET = "osa-dumont-backup";

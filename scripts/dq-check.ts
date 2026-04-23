@@ -18,7 +18,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { getPool, closePg } from "../src/memory/pg-database.js";
+import { getPool, closePg } from "../src/db/pg-database.js";
 import { childLogger } from "../src/utils/logger.js";
 import { runAssertions, ALL_ASSERTIONS } from "../src/ingestion/data-quality/index.js";
 
