@@ -152,7 +152,7 @@ async function downloadDailyTarFromS3(
     }
     console.log(`[backfill] Reassembling ${partPaths.length} parts → ${date}.tar`);
     const parts = partPaths.map((p) => `"${p}"`).join(" ");
-    execSync(`cat ${parts} > "${tarPath}"`, { timeout: 300_000 });
+    execSync(`cat ${parts} > "${tarPath}"`, { timeout: 1_800_000 });
     for (const p of partPaths) rmSync(p, { force: true });
   }
 
@@ -230,7 +230,7 @@ function downloadDailyTar(date: string, destDir: string): string {
     }
     console.log(`[backfill] Reassembling ${partPaths.length} parts → ${date}.tar`);
     const parts = partPaths.map((p) => `"${p}"`).join(" ");
-    execSync(`cat ${parts} > "${tarPath}"`, { timeout: 300_000 });
+    execSync(`cat ${parts} > "${tarPath}"`, { timeout: 1_800_000 });
     for (const p of partPaths) rmSync(p, { force: true });
   }
 
