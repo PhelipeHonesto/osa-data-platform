@@ -38,6 +38,7 @@
     "operators:backfill-types": "tsx scripts/backfill-operator-types.ts",
     "operators:dedup": "tsx scripts/dedup-operator-rows.ts",
     "operators:fix-name": "tsx scripts/fix-canonical-name.ts",
+    "operators:review": "tsx scripts/operators-review.ts",
     "dq:check": "tsx scripts/dq-check.ts",
     "db:migrate-pg": "tsx src/db/migrate-pg.ts",
     "db:migrate-data": "tsx src/db/migrate-data.ts"
