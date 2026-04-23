@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { siblingFromSpecifier, scanMemoryImports, scanMemoryRoot } from "../scripts/check-agent-layer-isolation.js";
+import {
+  siblingFromSpecifier,
+  scanMemoryImports,
+  scanMemoryRoot,
+  agentToDataPlatformImport,
+  scanAgentRoots,
+} from "../scripts/check-agent-layer-isolation.js";
 
 describe("siblingFromSpecifier", () => {
   it("flags ../ingestion/foo.js as 'ingestion'", () => {
@@ -77,6 +83,78 @@ describe("scanMemoryRoot — current codebase is clean", () => {
         .map((v) => `${v.file}:${v.line} → src/${v.imported}`)
         .join("\n");
       throw new Error(`Unexpected memory-import violation:\n${preview}`);
+    }
+    expect(violations).toEqual([]);
+  });
+});
+
+describe("agentToDataPlatformImport — Rule 2 (agent ↔ data-platform)", () => {
+  it("flags agent file importing from src/ingestion", () => {
+    expect(
+      agentToDataPlatformImport("src/capabilities/intake.ts", "../ingestion/opensky-worker.js"),
+    ).toBe("src/ingestion/");
+  });
+
+  it("flags agent file importing from src/analytics/data-quality", () => {
+    expect(
+      agentToDataPlatformImport("src/server/routes/intelligence.ts", "../../analytics/data-quality.js"),
+    ).toBe("src/analytics/");
+  });
+
+  it("allows agent file importing from src/analytics/wingx-queries", () => {
+    expect(
+      agentToDataPlatformImport("src/mcp/tools.ts", "../analytics/wingx-queries.js"),
+    ).toBeNull();
+  });
+
+  it("allows agent file importing from src/analytics/quality-queries", () => {
+    expect(
+      agentToDataPlatformImport("src/server/routes/intelligence.ts", "../../analytics/quality-queries.js"),
+    ).toBeNull();
+  });
+
+  it("flags agent file importing from src/memory/canonical", () => {
+    expect(
+      agentToDataPlatformImport("src/orchestrator/index.ts", "../memory/canonical/resolver.js"),
+    ).toBe("src/memory/canonical/");
+  });
+
+  it("flags agent file importing from src/memory/schema", () => {
+    expect(
+      agentToDataPlatformImport("src/server/index.ts", "../memory/schema/migrate.js"),
+    ).toBe("src/memory/schema/");
+  });
+
+  it("allows shared memory root imports (database, stores)", () => {
+    expect(
+      agentToDataPlatformImport("src/capabilities/intake.ts", "../memory/database.js"),
+    ).toBeNull();
+  });
+
+  it("allows utils, schemas, monitoring (shared leaves)", () => {
+    expect(agentToDataPlatformImport("src/capabilities/intake.ts", "../utils/logger.js")).toBeNull();
+    expect(agentToDataPlatformImport("src/capabilities/intake.ts", "../schemas/deal.js")).toBeNull();
+    expect(agentToDataPlatformImport("src/server/index.ts", "../monitoring/health-check.js")).toBeNull();
+  });
+
+  it("allows external packages and node stdlib", () => {
+    expect(agentToDataPlatformImport("src/capabilities/intake.ts", "pg")).toBeNull();
+    expect(agentToDataPlatformImport("src/capabilities/intake.ts", "node:fs")).toBeNull();
+  });
+});
+
+describe("scanAgentRoots — current codebase is clean", () => {
+  it("no agent-side file imports from data-platform dirs today", () => {
+    // Baseline: if this fails, a new agent→data-platform import was introduced.
+    // Either move the callee to an agent-side read file (mirror the
+    // wingx-queries / quality-queries pattern) or invert the dependency.
+    const violations = scanAgentRoots();
+    if (violations.length > 0) {
+      const preview = violations
+        .slice(0, 5)
+        .map((v) => `${v.file}:${v.line} → ${v.imported}`)
+        .join("\n");
+      throw new Error(`Unexpected agent→data-platform violation:\n${preview}`);
     }
     expect(violations).toEqual([]);
   });

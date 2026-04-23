@@ -1,19 +1,27 @@
 /**
- * Architecture-direction check: src/memory/ (persistence) is a leaf module.
+ * Architecture-direction checks for Dumont.
  *
- * It may import from src/utils/ and node/ts stdlib — nothing else. Any
- * import from src/ingestion, src/capabilities, src/orchestrator, src/mcp,
- * src/server, src/analytics, src/eval, or src/monitoring is a direction
- * violation (the application depends on memory; memory must not depend on
- * the application).
+ * Two rules enforced:
  *
- * Exits 1 on any hit.
+ * 1. Memory is a leaf. src/memory/ may import from src/utils, src/schemas,
+ *    and node/ts stdlib only. Any import from src/ingestion, src/capabilities,
+ *    src/orchestrator, src/mcp, src/server, src/analytics, src/eval, or
+ *    src/monitoring is a direction violation (the application depends on
+ *    memory; memory must not depend on the application).
  *
- * Note: Schema Evolution Rule 6 ("agents must not reference Silver/Gold
- * canonical tables directly — route through MCP tools + Gold views") is a
- * separate check. It's deferred until Phase 2, when Gold views land. At
- * that point src/mcp/tools.ts rewrites to consume views, and we can add
- * a stricter scan.
+ * 2. Agent does not import from data-platform. Files under agent-side roots
+ *    (src/capabilities, src/orchestrator, src/mcp, src/server, src/channels,
+ *    src/router, src/integrations, src/eval, src/query, src/templates,
+ *    src/fixtures) may not import from data-platform paths (src/ingestion,
+ *    src/memory/canonical, src/memory/schema, src/analytics/ — EXCEPT
+ *    src/analytics/wingx-queries.ts, which is the one intentional agent-side
+ *    read consumer).
+ *
+ *    This rule guards the agent ↔ data-platform split that Phase 3 relies on.
+ *    Shared roots (src/memory/ root files, src/schemas, src/utils,
+ *    src/monitoring) are agent-owned SSOT — both sides import them freely.
+ *
+ * Exits 1 on any hit, 0 clean.
  *
  * Usage:
  *   npx tsx scripts/check-agent-layer-isolation.ts
@@ -21,17 +29,13 @@
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+
+// ── Rule 1: memory-as-leaf ─────────────────────────────────────────────────
 
 const MEMORY_ROOT = "src/memory";
 
-/**
- * Sibling roots under src/ that memory must not import from.
- * src/utils and src/schemas are explicitly allowed — utils is stdlib-like
- * (logger, sentry, haversine), schemas is the Zod SSOT for runtime
- * validation, both leaf modules memory legitimately depends on.
- */
 const FORBIDDEN_SIBLINGS = [
   "ingestion",
   "capabilities",
@@ -43,12 +47,46 @@ const FORBIDDEN_SIBLINGS = [
   "monitoring",
 ];
 
+// ── Rule 2: agent ↔ data-platform boundary ────────────────────────────────
+
+const AGENT_ROOTS = [
+  "src/capabilities",
+  "src/orchestrator",
+  "src/mcp",
+  "src/server",
+  "src/channels",
+  "src/router",
+  "src/integrations",
+  "src/eval",
+  "src/query",
+  "src/templates",
+  "src/fixtures",
+];
+
+const DATA_PLATFORM_FORBIDDEN_PREFIXES = [
+  "src/ingestion/",
+  "src/memory/canonical/",
+  "src/memory/schema/",
+];
+
+// Analytics is forbidden as a whole EXCEPT these specific files — the
+// agent-side read paths that legitimately consume computed analytics.
+// Each entry is a src-relative path without extension.
+const ANALYTICS_EXEMPT: ReadonlySet<string> = new Set([
+  "src/analytics/wingx-queries",
+  "src/analytics/quality-queries",
+]);
+
+// ── Shared types ───────────────────────────────────────────────────────────
+
 interface Violation {
   file: string;
   line: number;
   imported: string;
   context: string;
 }
+
+// ── File-walk helper ───────────────────────────────────────────────────────
 
 function walk(dir: string): string[] {
   const out: string[] = [];
@@ -64,9 +102,11 @@ function walk(dir: string): string[] {
   return out;
 }
 
+// ── Rule 1 implementation ──────────────────────────────────────────────────
+
 /**
- * Given an `import ... from "..."` specifier, return the sibling-under-src
- * directory name if it references one, else null.
+ * Given an `import ... from "..."` specifier in a memory/ file, return the
+ * sibling-under-src directory name if it references a forbidden one, else null.
  *
  * Handles:
  *   "../ingestion/foo.js"            → "ingestion"
@@ -77,12 +117,9 @@ function walk(dir: string): string[] {
  *   "../utils/logger.js"              (utils is allowed)
  *   "node:fs"                         (node stdlib)
  *   "pg"                              (external package)
- *   any absolute "src/..." paths (we don't use those)
  */
 export function siblingFromSpecifier(spec: string): string | null {
-  // Only care about relative imports that go UP out of memory/.
   if (!spec.startsWith("../")) return null;
-  // Strip leading ../ segments, then take the next path segment.
   const segments = spec.split("/");
   let i = 0;
   while (i < segments.length && segments[i] === "..") i++;
@@ -120,19 +157,115 @@ export function scanMemoryRoot(root: string = MEMORY_ROOT): Violation[] {
   return all;
 }
 
+// ── Rule 2 implementation ──────────────────────────────────────────────────
+
+/**
+ * Resolve a relative import specifier from the perspective of a file,
+ * returning the src-relative path without extension. Returns null for
+ * non-relative specifiers (external packages, node: stdlib) or targets
+ * outside src/.
+ */
+export function resolveSrcRelative(filePath: string, spec: string): string | null {
+  if (!spec.startsWith(".")) return null;
+  // join(dirname(filePath), spec) collapses ".." segments and normalizes separators.
+  const resolved = join(dirname(filePath), spec).replace(/\\/g, "/");
+  const withoutExt = resolved.replace(/\.(js|ts)$/, "");
+  if (!withoutExt.startsWith("src/")) return null;
+  return withoutExt;
+}
+
+/**
+ * Classify an import from an agent-side file. Returns the forbidden prefix
+ * if the target is data-platform territory, or null if the import is allowed.
+ *
+ * `src/analytics/wingx-queries.ts` is the one exception — agent-side MCP
+ * tools and server routes consume it as the read layer.
+ */
+export function agentToDataPlatformImport(filePath: string, spec: string): string | null {
+  const target = resolveSrcRelative(filePath, spec);
+  if (!target) return null;
+
+  if (target.startsWith("src/analytics/")) {
+    for (const exempt of ANALYTICS_EXEMPT) {
+      if (target.startsWith(exempt)) return null;
+    }
+    return "src/analytics/";
+  }
+
+  for (const prefix of DATA_PLATFORM_FORBIDDEN_PREFIXES) {
+    if (target.startsWith(prefix)) return prefix;
+  }
+
+  return null;
+}
+
+export function scanAgentImports(
+  filePath: string,
+  content: string,
+): Array<{ line: number; target: string; context: string }> {
+  const out: Array<{ line: number; target: string; context: string }> = [];
+  const lines = content.split("\n");
+  const importRe = /from\s+["']([^"']+)["']/;
+  const typeImportRe = /import\s+type\s+.*from\s+["']([^"']+)["']/;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.trim().startsWith("//")) continue;
+    const m = line.match(importRe) ?? line.match(typeImportRe);
+    if (!m || !m[1]) continue;
+    const target = agentToDataPlatformImport(filePath, m[1]);
+    if (target) out.push({ line: i + 1, target, context: line.trim() });
+  }
+  return out;
+}
+
+export function scanAgentRoots(roots: string[] = AGENT_ROOTS): Violation[] {
+  const all: Violation[] = [];
+  for (const root of roots) {
+    for (const filePath of walk(root)) {
+      const content = readFileSync(filePath, "utf-8");
+      const hits = scanAgentImports(filePath, content);
+      for (const h of hits) {
+        all.push({ file: filePath, line: h.line, imported: h.target, context: h.context });
+      }
+    }
+  }
+  return all;
+}
+
+// ── CLI / main ─────────────────────────────────────────────────────────────
+
 async function main(): Promise<void> {
-  const violations = scanMemoryRoot();
-  if (violations.length === 0) {
-    console.log(`[layer-check] ✓ src/memory/ has no upward imports (memory is a leaf — correct).`);
+  const memoryViolations = scanMemoryRoot();
+  const agentViolations = scanAgentRoots();
+
+  if (memoryViolations.length === 0 && agentViolations.length === 0) {
+    console.log(
+      `[layer-check] ✓ memory is a leaf + agent does not import from data-platform (both rules pass).`,
+    );
     return;
   }
-  console.error(`[layer-check] ✗ Found ${violations.length} direction violation(s):`);
-  console.error(`[layer-check]   src/memory/ imports from sibling src/ modules it must not depend on.`);
-  console.error(`[layer-check]   The application layer depends on memory, not the other way around.\n`);
-  for (const v of violations) {
-    console.error(`  ${v.file}:${v.line}  (imports → src/${v.imported})`);
-    console.error(`    ${v.context}`);
+
+  if (memoryViolations.length > 0) {
+    console.error(`[layer-check] ✗ Rule 1 (memory leaf) — ${memoryViolations.length} violation(s):`);
+    console.error(`[layer-check]   src/memory/ imports from sibling src/ modules it must not depend on.`);
+    console.error(`[layer-check]   The application layer depends on memory, not the other way around.\n`);
+    for (const v of memoryViolations) {
+      console.error(`  ${v.file}:${v.line}  (imports → src/${v.imported})`);
+      console.error(`    ${v.context}`);
+    }
   }
+
+  if (agentViolations.length > 0) {
+    if (memoryViolations.length > 0) console.error("");
+    console.error(`[layer-check] ✗ Rule 2 (agent ↔ data-platform) — ${agentViolations.length} violation(s):`);
+    console.error(`[layer-check]   Agent code must not import from src/ingestion, src/memory/canonical,`);
+    console.error(`[layer-check]   src/memory/schema, or src/analytics/ (except wingx-queries.ts).\n`);
+    for (const v of agentViolations) {
+      console.error(`  ${v.file}:${v.line}  (imports → ${v.imported})`);
+      console.error(`    ${v.context}`);
+    }
+  }
+
   process.exit(1);
 }
 
