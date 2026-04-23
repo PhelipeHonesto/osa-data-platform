@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment — NEVER commit
+.env
+.env.local
+.env.*.local
+
+# Runtime data
+data/
+scripts/s3-restore-state.json
+
+# Editor / OS
+.DS_Store
+.claude/*
+!.claude/lessons.md
+!.claude/commands
+!.claude/commands/**
+!.claude/skills
+!.claude/skills/**
+!.claude/settings.json
+.claude/**/.DS_Store
+*.log
+*.json.bak
+.gstack/
