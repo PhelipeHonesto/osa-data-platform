@@ -20,16 +20,16 @@ import {
 // first so check 1 (the bare COUNT) falls through last.
 function passingFixtures(): Record<string, unknown[]> {
   return {
-    "WHERE flight_time_min > 720": [{ n: 42 }],
-    "WHERE EXTRACT(HOUR FROM departure_time": [{ n: 20 }],
+    "WHERE flight_time_min > 1440": [{ n: 42 }],
+    "WHERE EXTRACT(HOUR FROM departure_time": [{ cluster: 20, total: 21_000_000 }],
     "SELECT EXTRACT(HOUR FROM departure_time::timestamptz)::int AS hr":
       Array.from({ length: 24 }, (_, i) => ({ hr: i, c: 200_000 + (i % 3) * 50_000 })),
     "AVG(flight_time_min)": [{ avg: "120.5", max: 600 }],
-    "COUNT(DISTINCT (departure_time": [{ n: 850 }],
+    "COUNT(DISTINCT SUBSTRING": [{ n: 850 }],
     "FROM backfill_progress GROUP BY status": [
       { status: "complete", c: 850 },
     ],
-    "FROM adsb_completed_legs": [{ n: 6_200_000 }],
+    "FROM adsb_completed_legs": [{ n: 21_000_000 }],
   };
 }
 
@@ -67,7 +67,7 @@ describe("phase7-verify — check logic", () => {
     }
   });
 
-  it("leg count below 5M triggers phase7_leg_count fail (and only that check)", async () => {
+  it("leg count below 15M triggers phase7_leg_count fail (and only that check)", async () => {
     const fx = passingFixtures();
     fx["FROM adsb_completed_legs"] = [{ n: 1_000_000 }];
     const results = await runAllChecks(mockClient(fx));
@@ -75,13 +75,14 @@ describe("phase7-verify — check logic", () => {
     expect(failed.map((r) => r.name)).toEqual(["phase7_leg_count"]);
   });
 
-  it("midnight cluster >= 1000 triggers phase7_no_midnight_cluster fail", async () => {
+  it("midnight cluster ratio >= 0.0005 triggers phase7_no_midnight_cluster fail", async () => {
     const fx = passingFixtures();
-    fx["WHERE EXTRACT(HOUR FROM departure_time"] = [{ n: 1500 }];
+    // cluster=5000 / total=8M → ratio 0.000625 > threshold 0.0005
+    fx["WHERE EXTRACT(HOUR FROM departure_time"] = [{ cluster: 5000, total: 8_000_000 }];
     const results = await runAllChecks(mockClient(fx));
     const failed = results.filter((r) => r.status === "fail");
     expect(failed.map((r) => r.name)).toContain("phase7_no_midnight_cluster");
-    expect(failed.find((r) => r.name === "phase7_no_midnight_cluster")!.actualValue).toBe("1500");
+    expect(failed.find((r) => r.name === "phase7_no_midnight_cluster")!.actualValue).toBe("5000/8000000 = 0.0625%");
   });
 
   it("skewed hour distribution (one hour > 3x median) triggers spread fail", async () => {
@@ -99,17 +100,17 @@ describe("phase7-verify — check logic", () => {
 
   it("extreme max flight time triggers distribution fail", async () => {
     const fx = passingFixtures();
-    fx["AVG(flight_time_min)"] = [{ avg: "120", max: 1286 }]; // the original bug
+    fx["AVG(flight_time_min)"] = [{ avg: "120", max: 2000 }]; // outside [600, 1440]
     const results = await runAllChecks(mockClient(fx));
     const check = results.find((r) => r.name === "phase7_flight_time_distribution")!;
     expect(check.status).toBe("fail");
   });
 
-  it("backfill_progress with failed days triggers completion fail", async () => {
+  it("backfill_progress failed count above KNOWN_FAILED_MAX triggers completion fail", async () => {
     const fx = passingFixtures();
     fx["FROM backfill_progress GROUP BY status"] = [
       { status: "complete", c: 800 },
-      { status: "failed", c: 5 },
+      { status: "failed", c: 15 }, // exceeds KNOWN_FAILED_MAX=10
     ];
     const results = await runAllChecks(mockClient(fx));
     const check = results.find((r) => r.name === "phase7_backfill_progress_complete")!;
