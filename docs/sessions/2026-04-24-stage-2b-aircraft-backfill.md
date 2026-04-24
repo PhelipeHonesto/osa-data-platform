@@ -59,3 +59,13 @@ CP4 decision deferred until the post-Stage-3 session picks this up.
 (Carried from Stage 2a notes, still pending.) **Migration verification rule**: every migration commit must end with (a) local up-down-up rollback, (b) `npm run db:migrate-pg` against Supabase, (c) `describe-schema` verification. All three, not any two.
 
 Additional Stage 2b finding worth a rule: **long-running background scripts must not pipe stdout through `| tail -N`** — the pipe buffers until process exit and blocks real-time monitoring. Use `> file` redirect + `Monitor` with `tail -F` instead.
+
+## Probe findings (late afternoon, before next session restart)
+
+Two pathways probed for operator-aircraft link expansion beyond cert_holder:
+
+1. **target_companies** (12,887 rows, 15,938 tails): ~11% gross match rate vs top-100 faa_operators by aircraft_count, ~6-8% net after REVIEW_GATE would filter first-word false positives. Modest pathway, real but not game-changing. Defer to session after operator coverage expands (match set grows as canonical grows).
+
+2. **adsb_completed_legs.operator_name**: NOT a distinct pathway — it's a propagated copy of faa_aircraft.certificate_holder during the ADS-B ingest join. Top-30 distribution matches CP3 cert_holder top exactly (airlines, trustees, flight schools). Same structural ceiling as CP3. Do not pursue.
+
+Conclusion: next session does Step A only — faa_operators merge to expand canonical.operators by ~100-200 rows. target_companies stays on the followups list for post-coverage-expansion.
