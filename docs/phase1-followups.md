@@ -439,3 +439,114 @@ in a follow-up data session.
 
 **Priority**: before Stage 2c aircraft resolver. Not blocking CP2/3/4.
 
+---
+
+## operator_aliases gap: brand-name variants miss canonical operators
+
+**Discovered**: 2026-04-24, Stage 2b Checkpoint 3 top-no_match analysis.
+
+**Finding**: several CP3 `no_match` certificate_holders should resolve to
+operators that ARE already in the canonical table, but don't — because the
+string differs from the canonical_name:
+
+| certificate_holder (no_match) | aircraft | canonical operator it should alias |
+|---|---|---|
+| FLEXJET LLC                   | 15  | Flexjet          |
+| NETJETS SALES INC             | 10  | NetJets Aviation |
+| WHEELS UP PARTNERS LLC        | 11  | Wheels Up        |
+
+These aren't operator-coverage gaps — they're alias gaps. The resolver
+scores the fuzzy overlap in the mid band and REVIEW_GATE (correctly)
+demotes signal-less medium matches to `no_match`.
+
+**Fix**: populate `public.operator_aliases` with legal-name variants once
+the broader alias-table audit (from Stage 2a: `operator_aliases` has only
+1 row after Stage 1 "complete") lands. Re-running CP3 after aliases are
+populated would convert these `no_match` rows into `matched`.
+
+**Priority**: Track 1 Stage 3 parallel. The audit is the gating question,
+not the specific entries.
+
+---
+
+## Pre-filter priority: flip `registrant_type=1` before `certificateHolder IS NULL`
+
+**Discovered**: 2026-04-24, Stage 2b Checkpoint 3 bucket-distribution surprise.
+
+**Finding**: current `preFilter()` order checks null cert first, individual
+second. 73,060 rows have `registrant_type='1'` AND NULL cert_holder — they
+land in `skipped_null` rather than `skipped_individual`. Functionally
+correct (nothing to resolve either way) but makes bucket counts misleading
+for audit purposes — the user's expectation of "skipped_individual ≈ 3,000
+per 5K batch" doesn't match reality for this reason.
+
+**Fix**: flip the check order in `src/entity-resolution/pre-filters.ts`:
+
+```ts
+if (input.registrantType === "1") return "skipped_individual";
+if (ch === null) return "skipped_null";
+// ... rest unchanged
+```
+
+Update test cases in `tests/pre-filters.test.ts` accordingly (the "null
+short-circuits first" test becomes "null cert with reg_type=1 →
+skipped_individual").
+
+**Priority**: cosmetic / audit-clarity. Non-blocking.
+
+---
+
+## Pre-filter expansion: flight-school bucket
+
+**Discovered**: 2026-04-24, Stage 2b Checkpoint 3 top-50 no_match analysis.
+
+**Finding**: flight schools appear in no_match and aren't charter
+operators. Representative entries from the CP3 run:
+
+- EMBRY-RIDDLE AERONAUTICAL UNIVERSITY INC (10)
+- SKYBORNE AIRLINE ACADEMY INC (10)
+- HILLSBORO AERO ACADEMY LLC (9)
+- BOWLING GREEN FLIGHT CENTER LLC (7)
+- AMERIFLYERS OF TEXAS INC (7)
+- CAE DOSS AVIATION INC (7)
+
+These are technically correct as `no_match` (not charter operators), but
+noisy — they clutter the top-no_match signal that drives Track 1 Stage 3
+prioritization.
+
+**Fix**: add `skipped_flight_school` bucket to `pre-filters.ts`. Pattern:
+names containing `FLIGHT CENTER`, `FLIGHT ACADEMY`, `AERONAUTICAL
+UNIVERSITY`, `AERO ACADEMY`, `AVIATION ACADEMY`, `FLIGHT SCHOOL`, plus
+explicit list for known non-suffix cases (EMBRY-RIDDLE, SKYBORNE, CAE DOSS).
+
+**Priority**: quality-of-life. Not blocking; re-runs of CP3 will continue
+to treat these as `no_match` until addressed.
+
+---
+
+## Pre-filter expansion: manufacturer list additions
+
+**Discovered**: 2026-04-24, Stage 2b Checkpoint 3.
+
+**Finding**: the current manufacturer list in `pre-filters.ts` misses a
+few common ones that appear in CP3 no_match:
+
+- BELL TEXTRON INC (11)
+- PIPER AIRCRAFT INC (13)
+- PILATUS BUSINESS AIRCRAFT LTD (8)
+- BOEING CO (5) — note: already have "BOEING COMPANY", CO variant slips
+- EMBRAER EXECUTIVE AIRCRAFT (already listed)
+
+**Fix**: append to `MANUFACTURER_NAMES` in `pre-filters.ts`:
+
+```ts
+"BELL TEXTRON INC",
+"PIPER AIRCRAFT INC",
+"PILATUS BUSINESS AIRCRAFT LTD",
+"BOEING CO",
+```
+
+Plus a test case each.
+
+**Priority**: quality-of-life, same tier as flight-school bucket.
+
