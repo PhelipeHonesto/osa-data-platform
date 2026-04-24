@@ -18,7 +18,19 @@ All new entity-resolution tables — aircraft, FBO, airport, person, and every c
 
 Exactly five canonical entities: `operator`, `aircraft`, `fbo`, `airport`, `person`. **No sixth entity is added until all five have resolution pipelines in place.** This is a design-gravity decision — expanding the node set before the existing set resolves produces a half-built ontology nobody can reason about. Current status: operator done, aircraft Stage 2a shipped (tables empty), FBO/airport/person not started. Status lives in `docs/er-architecture-plan.md` §"Build sequence."
 
-### 4. Architecture docs (read before structural changes)
+### 4. Migration verification rule
+
+Every schema change must be verified in three steps, not two. A passing local Docker rollback test proves the SQL is sound. It does NOT prove the schema is live in production. Every migration commit must end with:
+
+1. Local Docker Postgres up → down → up idempotency test (or equivalent ad-hoc spin-up).
+2. `npm run db:migrate-pg` against Supabase — the script must exit 0.
+3. Explicit verification that the new object exists in production, via either `describe-schema` MCP call (for tables in public), direct `psql \d+ canonical.<table>` (for canonical schema objects not visible via describe-schema), or a SELECT against the new object that returns expected shape.
+
+All three. Not any two. A migrate-pg exit code of 0 is necessary but not sufficient — the script considers a migration "applied" once it records the row in `_migrations`, but that record doesn't prove the DDL ran successfully on the target DB.
+
+This rule exists because Stage 2a (2026-04-24 morning session) shipped three commits with passing local rollback tests and a test-suite pass, but the Supabase `db:migrate-pg` step was silently dropped between the rollback test and commit/push. The missing tables weren't caught until Stage 2b pre-flight ~6 hours later.
+
+### 5. Architecture docs (read before structural changes)
 
 - `docs/er-architecture-plan.md` — five-entity model, Two-Source Rule, funnel detection, build tracks
 - `docs/er/aircraft.md` — aircraft entity spec (seven-role model, N-number reuse, hex_code as identity)

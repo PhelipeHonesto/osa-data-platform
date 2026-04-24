@@ -574,3 +574,15 @@ Plus a test case each.
 **Fix**: either call `logger.flush()` + `process.exit(0)` explicitly at the end of each script's happy path, OR lazy-import the logger only inside code paths that use it. Applies to all scripts/* that import pino.
 
 **Priority**: quality-of-life, touch during the next script-writing session.
+
+---
+
+## npm run db:test helper for schema migrations
+
+**Discovered**: 2026-04-24, operator_events schema migration session.
+
+**Finding**: every schema migration session repeats the same Docker postgres spin-up/teardown ritual (`docker run --rm -d --name osa-pg-... -p 5433:5432 postgres:16`, wait for ready, run migration, verify, run rollback, re-run migration, stop container). Ad-hoc works but creates per-session friction and has subtle gotchas (port conflicts if a previous container didn't clean up, btree_gist + pgvector availability when the table needs them, etc.).
+
+**Fix**: add `npm run db:test` script that wraps the cycle. Spin up postgres:16 (or pgvector/pgvector:pg16 when needed), apply schema/_schemas.sql + a stub for FK targets, apply the file specified by `--migration=path`, verify via `\d+`, apply the matching rollback, re-apply the migration, tear down. Returns non-zero on any step failure.
+
+**Priority**: quality-of-life. Adds friction reduction across every future migration. Not blocking — ad-hoc pattern is documented in CLAUDE.md §4.
