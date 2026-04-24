@@ -550,3 +550,15 @@ Plus a test case each.
 
 **Priority**: quality-of-life, same tier as flight-school bucket.
 
+
+---
+
+## Add icao_callsign column to public.operators
+
+**Discovered**: 2026-04-24, Stage 2b-followup operator coverage merge.
+
+**Finding**: `faa_operators.dba_name` for major charter operators contains the 3-letter ICAO callsign (EJA=NetJets, LXJ=Flexjet, WUP=Wheels Up, PCH=PlaneSense, VJA=VistaJet, FFL=FlyExclusive, XSR=XO, JTL=JetSuite/JSX, EJM=Executive Jet Management, etc.). This is valuable signal for callsign-based trustee unmask (future Stage 2c pathway) but doesn't belong in `operator_aliases` (alias_type CHECK doesn't include `icao_callsign`, and the semantic is "identifier" not "alias").
+
+**Fix**: add `icao_callsign TEXT` column to `public.operators`. Backfill from `faa_operators.dba_name` where the value matches `^[A-Z]{3}$`. Single-row uniqueness not enforced (different operators can share callsigns in edge cases — consolidation periods, etc.).
+
+**Priority**: before Stage 2c trustee-unmask via callsign mining.

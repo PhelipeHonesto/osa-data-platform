@@ -32,6 +32,7 @@
     "embeddings:build": "tsx src/analytics/embeddings.ts",
     "safety:refresh": "tsx scripts/refresh-safety-ratings.ts",
     "operators:backfill-faa": "tsx scripts/backfill-operators-canonical-faa.ts",
+    "operators:backfill-faa-realfleet": "tsx scripts/backfill-operators-canonical-faa-realfleet.ts",
     "operators:backfill-safety": "tsx scripts/backfill-operators-canonical-safety.ts",
     "operators:calibrate": "tsx scripts/calibrate-match-thresholds.ts",
     "operators:trust-scores": "tsx scripts/compute-operator-trust-scores.ts",
