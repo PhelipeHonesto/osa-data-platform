@@ -15,3 +15,4 @@ Each file is idempotent (`DROP ... IF EXISTS`). Re-applying is safe.
 ## Contents
 
 - `2026-04-24-001-canonical-aircraft-rollback.sql` — drops `canonical.aircraft`, `canonical.aircraft_identities`, `canonical.aircraft_aliases`. Drops `canonical` schema only if empty.
+- `2026-04-24-002-canonical-operator-aircraft-link-rollback.sql` — drops `canonical.operator_aircraft_link`. Apply **before** the 001 rollback if rolling back both (the link table FKs into `canonical.aircraft`).
