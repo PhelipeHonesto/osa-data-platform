@@ -328,3 +328,18 @@ docs, commit-checklist language). Not blocking Stage 2a.
 
 **Priority**: cosmetic.
 
+---
+
+## Future migration: operators schema move
+
+When `public.operators` moves to `canonical.operators`, the FK from
+`canonical.operator_aircraft_link.operator_id` needs updating. Postgres
+`ALTER TABLE ... SET SCHEMA` handles this; FKs auto-update on rename.
+One-line migration, not a rebuild. Log here so future sessions don't
+over-scope it.
+
+Applies to all public-schema ER tables: `operators`, `operator_identities`,
+`operator_aliases`, `operator_match_review`. Move them in one transaction
+and refresh any agent-facing view definitions that reference the bare
+`operators` name.
+

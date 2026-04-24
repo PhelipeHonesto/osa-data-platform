@@ -117,6 +117,8 @@ Ranked by trust and independence. Higher tiers outweigh lower tiers on disputed 
 - **Tier D — Paid but trustworthy**: OpenSanctions (free), Open Ownership BODS (free), GLEIF LEI (free), ch-aviation (paid), Corporate Jet Investor Intelligence (paid).
 - **Tier E — Suspect**: JETNET, AMSTAT, ARGUS/Wyvern marketing copy, broker "market analysis," LLM AI-overview aggregators. Enter the graph only as claims to verify, never as sole sources.
 
+Note: an earlier draft of this section listed ARGUS/Wyvern under Tier D. They belong in Tier E because the subjects of the ratings pay the auditors — that is the defining Tier E marker, not whether the data is paid or free. `docs/data-sources.md` is authoritative on tier assignments going forward; reconcile against it if any downstream doc or script disagrees.
+
 **Excluded**: LinkedIn and any source whose ToS prohibits scraping. Non-negotiable.
 
 **Firecrawl role**: Handles Tier B + C fetch/extraction via self-hosted Docker. Does not replace direct feeds for Tier A government sources (those have official APIs or bulk CSVs).
