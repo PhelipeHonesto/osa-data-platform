@@ -562,3 +562,15 @@ Plus a test case each.
 **Fix**: add `icao_callsign TEXT` column to `public.operators`. Backfill from `faa_operators.dba_name` where the value matches `^[A-Z]{3}$`. Single-row uniqueness not enforced (different operators can share callsigns in edge cases — consolidation periods, etc.).
 
 **Priority**: before Stage 2c trustee-unmask via callsign mining.
+
+---
+
+## Pino logger keeps event loop alive on dry-run early-return path
+
+**Discovered**: 2026-04-24, realfleet backfill execution.
+
+**Finding**: scripts that import the shared pino child logger but return early (e.g., dry-run path that skips the COMMIT block) don't exit the Node process cleanly — event loop stays warm for ~15+ seconds waiting for the async log destination to drain. Cosmetic, not a correctness issue. Commit paths exit normally.
+
+**Fix**: either call `logger.flush()` + `process.exit(0)` explicitly at the end of each script's happy path, OR lazy-import the logger only inside code paths that use it. Applies to all scripts/* that import pino.
+
+**Priority**: quality-of-life, touch during the next script-writing session.
