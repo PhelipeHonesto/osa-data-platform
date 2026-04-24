@@ -240,6 +240,74 @@ Use cases beyond CP3:
 - Threshold recalibration re-runs and compares decision shifts
 - Review-queue tuning reads `tier`, `score`, `second_best_score`, `reason` distributions
 
+## canonical.operator_events — historical ER primitive
+
+Schema: `schema/canonical/operator_events.sql`. Empty on arrival (2026-04-24); population is Stage 3+ work.
+
+### Role in the five-entity model
+
+Operator entities, like every entity in the canonical layer, have a *current state* and a *history*. `public.operators` + `public.operator_identities` + `public.operator_aliases` capture the current state — who exists right now, what sources confirm them, what name variants they answer to. `canonical.operator_events` captures the history — discrete moments when identity, structure, or certificate changed.
+
+The split matters because state and history have different read shapes. State queries are point lookups: "what is operator X today." History queries are temporal walks: "what was operator X five years ago," "who held this Part 135 cert before 2022," "trace the lineage from Avantair forward through every successor entity." Mixing them in one table forces every query to filter `WHERE valid_to IS NULL` and forces every state mutation to be append-with-close. Splitting them keeps the state table simple and the history table append-only.
+
+### Event taxonomy
+
+11 event types. The full expected-field-by-event-type matrix lives in the schema file header; this section walks the aviation-specific intuition behind each.
+
+- **`rebrand`** — Same legal entity, new marketing name. JetSmarter → XO (2018). XOJET → Jet Select (2018, before XO acquired). Cert preserved by definition; `aoc_before` and `aoc_after` are NULL.
+- **`legal_rename`** — New legal entity name, same operations and same cert. Marquis Jet Partners filed for a name change to NetJets Marquis Inc. Both fields populated, often equal.
+- **`acquisition`** — A acquires B. `primary_operator_id` = acquirer, `other_party_id` = acquired. Wheels Up acquiring Delta Private Jets (2020). Vista Global acquiring XOJET (2018). The acquired entity may continue operating as a subsidiary or be dissolved by a follow-up `dissolution` event.
+- **`merger`** — A and B combine into C. All three populated: predecessor, successor, other_party. America West + US Airways → US Airways (2005, the new combined entity).
+- **`spinoff`** — B separates from A. JetSuite spinning off JSX as a separate scheduled-charter brand (2019). `predecessor_id` is the parent, `successor_id` is the spun-off entity.
+- **`cert_transfer`** — Part 135 cert moves between legal entities. Common during M&A: cert held by the acquired entity transfers to a holding company. Both `aoc_before` and `aoc_after` populated, usually equal (the cert number itself doesn't change, the holder does).
+- **`cert_surrender`** — Cert voluntarily given up. Often pre-merger (consolidate to one cert) or pre-dissolution. `aoc_before` populated, `aoc_after` NULL.
+- **`cert_revocation`** — FAA revoked the cert. Distinct from surrender — adversarial. Subject to public bulletin via FAA GENOT.
+- **`dissolution`** — Legal entity wound up. TAG Aviation USA dissolved (2018) followed by TAG San Marino formation as the inheriting EU operation. The two events are independent rows; the lineage is reconstructed by the lineage view.
+- **`formation`** — Legal entity first appears. Not every operator has a `formation` event in the table — only when the formation date is independently verified by a Tier 1 source. Day-zero canonical creation does not generate a `formation` event.
+- **`aoc_change`** — Foreign Air Operator Certificate change for non-US operators. Reserved for entities like VistaJet Malta or Comlux Aruba that operate under foreign AOCs.
+
+### Two-Source Rule application
+
+Same shape as every other canonical temporal table: `corroborated_by` and `contradicted_by` JSONB arrays of `{source, source_url, source_timestamp, ingestion_date}`. An event with one source has `corroborated_by = NULL` (or empty array), and Two-Source Rule status is computed: `jsonb_array_length(corroborated_by) >= 1` means the row has independent corroboration, satisfying the rule.
+
+Ingestion flow: first source inserts a new event row with `corroborated_by = NULL`. Second independent source matches the natural_key (or `event_type + event_date + party UUIDs` tuple) and instead of inserting a duplicate, appends its provenance to the first row's `corroborated_by` array. A third+ source repeats. Conflicting sources (same event_type + parties but different event_date, or different aoc_after) append to `contradicted_by` with a `conflict` field describing the disagreement.
+
+Single-source claims stay in the table — they are the input pipeline, not noise — but the agent-facing views filter them out by default. Confidence scoring composes: a Tier-1 single-source claim outranks a Tier-3 corroborated-twice claim only via explicit confidence override at the source level.
+
+### Source pathways
+
+- **`faa_genot`** — FAA General Notice bulletins. Authoritative for cert transfers, surrenders, revocations. Tier 1.
+- **`sec_edgar_8k`** / **`sec_edgar_s1`** — SEC filings for public-company M&A and formations. Authoritative when applicable. Tier 1.
+- **`court_filing_<jurisdiction>`** — Bankruptcy and dissolution filings. Tier 1 for the events they cover; not all operators end up in court.
+- **`state_sos_<state>`** — Secretary of State entity registries. Authoritative for `formation` and `dissolution` of legal entities, less so for what operations were attached. Tier 1 for the legal-entity layer.
+- **`company_press_release`** — Operator press releases. Tier 2 — useful for rebrands and acquisitions but written for marketing, not record. Population requires Firecrawl scraping of operator websites.
+- **`loud_hawk_<article-slug>`** — Loud Hawk editorial pieces. Tier 2 for the underlying claim (cite the primary source in the article), Tier 1 for "this analysis was published" as a meta-event. The editorial pipeline becomes a structured input when an article corroborates a Tier-1 claim independently.
+- **`news_article`** — Trade press (AIN Online, Corporate Jet Investor, FlightGlobal). Tier 2 — quality varies by outlet and reporter.
+- **`manual`** — Human-curated entries. Required when no scrape-able source exists (private rebrand announcements, off-the-record acquisitions confirmed by industry contacts). Confidence floor is medium absent corroboration.
+
+### Query patterns
+
+- **"Who was this operator five years ago?"** Walk `successor_id ← predecessor_id` recursively from the current operator UUID, filtered to events where `event_date <= TARGET_DATE`. The recursion terminates at the earliest predecessor (or at an unresolved `predecessor_name` text-only row).
+- **"What cert did this operator hold before 2022?"** Filter `aoc_before` and `aoc_after` rows where any of the four party UUIDs match the operator and `event_date < '2022-01-01'`, ordered by `event_date DESC`. The most recent `aoc_after` before the date is the answer.
+- **"What did this cert pass through?"** Filter on `aoc_before = '<cert>'` OR `aoc_after = '<cert>'`, ordered by `event_date`. Returns the chain of holders.
+- **"What happened in the Part 135 industry in Q3 2024?"** Filter `event_date BETWEEN '2024-07-01' AND '2024-09-30'`, group by `event_type`. Useful for editorial trend pieces.
+- **"Has anyone disputed this rebrand?"** Inspect `contradicted_by` on the row.
+
+### Dependency on Firecrawl for population
+
+FAA GENOT and SEC EDGAR have structured public APIs and account for the bulk of high-confidence ingestion. Everything else — operator press releases, trade press, court filings, state SOS records — needs web scraping. Firecrawl is the planned scraping layer for Stage 3+. Until Firecrawl is wired in, `operator_events` only ingests the structured-source subset. Manual curation fills the gap for events that matter for current Loud Hawk pieces.
+
+### Future agent-facing views (out of scope this session)
+
+When `operator_events` is meaningfully populated (Stage 3+), two views expose it to Dumont and other agents:
+
+- **`v_operator_lineage_current`** — Given an `operator_id`, return the full lineage chain (all rebrands, mergers, acquisitions back to earliest predecessor). Walks `predecessor_id`/`successor_id` recursively.
+- **`v_operator_history`** — Given an `operator_id` and a date, return what this operator was called, what cert they held, and what predecessor entities they contained, as of that date.
+
+These views are the public API for historical ER queries. The table itself is internal infrastructure — agents never query `operator_events` directly.
+
+View design is deferred to a session after `operator_events` has meaningful population; query patterns from real event data drive the view shape, and there is no value in speculative views over an empty table.
+
 ## Integration constraints
 
 - **`src/memory/` is a leaf module**, enforced by `scripts/check-agent-layer-isolation.ts`.
