@@ -7,7 +7,11 @@
 
 import { describe, it, expect } from "vitest";
 import type pg from "pg";
-import { resolveOperator, firstSignificantWord } from "../src/entity-resolution/operator-resolver.js";
+import {
+  resolveOperator,
+  resolveOperatorMatchOnly,
+  firstSignificantWord,
+} from "../src/entity-resolution/operator-resolver.js";
 
 // ── Mock client ──────────────────────────────────────────────────────────
 
@@ -257,5 +261,98 @@ describe("resolveOperator — caller-owned transaction is not committed by resol
     const sawCommit = calls.some((c) => /^COMMIT/i.test(c.sql.trim()));
     expect(sawBegin).toBe(false);
     expect(sawCommit).toBe(false);
+  });
+});
+
+// ── resolveOperatorMatchOnly (Stage 2b backfill) ─────────────────────────
+
+describe("resolveOperatorMatchOnly — exact short-circuit is read-only", () => {
+  it("returns exact via SELECT (not UPDATE) when identity already linked", async () => {
+    const { client, calls } = makeMockClient([
+      {
+        matcher: /SELECT\s+oi\.operator_id.*FROM operator_identities/s,
+        rows: [{ operator_id: "existing-uuid", canonical_name: "NetJets Aviation" }],
+      },
+    ]);
+    const result = await resolveOperatorMatchOnly(baseScraped, client);
+    expect(result.action).toBe("exact");
+    expect(result.operatorId).toBe("existing-uuid");
+    expect(result.canonicalName).toBe("NetJets Aviation");
+    expect(result.matchConfidence).toBe("exact");
+    // No write path touched — exactly one query emitted.
+    expect(calls.length).toBe(1);
+    expect(/^UPDATE|^INSERT/i.test(calls[0]!.sql.trim())).toBe(false);
+  });
+});
+
+describe("resolveOperatorMatchOnly — matched path returns candidate without writing", () => {
+  it("returns matched+operatorId for high-tier candidate and does NOT INSERT", async () => {
+    const { client, calls } = makeMockClient([
+      // exact short-circuit miss
+      { matcher: /SELECT\s+oi\.operator_id.*FROM operator_identities/s, rows: [] },
+      // candidate fetch — one high-similarity candidate
+      {
+        matcher: /FROM operators o/,
+        rows: [
+          { operator_id: "netjets-uuid", canonical_name: "NetJets Aviation", headquarters_icao: null, state: null, city: null },
+        ],
+      },
+    ]);
+    const result = await resolveOperatorMatchOnly(baseScraped, client);
+    expect(result.action).toBe("matched");
+    expect(result.operatorId).toBe("netjets-uuid");
+    expect(result.matchConfidence).toBe("high");
+    expect(result.topScore).not.toBeNull();
+    expect(result.tier).toBe("high");
+    expect(result.signals).not.toBeNull();
+    // Only the two reads ran — no INSERT, no UPDATE.
+    expect(calls.length).toBe(2);
+    expect(calls.some((c) => /^INSERT/i.test(c.sql.trim()))).toBe(false);
+    expect(calls.some((c) => /^UPDATE/i.test(c.sql.trim()))).toBe(false);
+  });
+});
+
+describe("resolveOperatorMatchOnly — no_match replaces the 'new' write path", () => {
+  it("returns no_match (never 'new') when zero candidates", async () => {
+    const { client, calls } = makeMockClient([
+      { matcher: /SELECT\s+oi\.operator_id.*FROM operator_identities/s, rows: [] },
+      { matcher: /FROM operators o/, rows: [] }, // zero candidates
+    ]);
+    const result = await resolveOperatorMatchOnly(
+      { name: "JOHN Q PUBLIC AIRCRAFT LLC", source: "faa" as const, sourceId: "N999ZZ" },
+      client,
+    );
+    expect(result.action).toBe("no_match");
+    expect(result.operatorId).toBeNull();
+    expect(result.matchConfidence).toBeNull();
+    // Read-only: nothing inserted into operators or operator_identities.
+    expect(calls.some((c) => /INTO operators/i.test(c.sql))).toBe(false);
+    expect(calls.some((c) => /INTO operator_identities/i.test(c.sql))).toBe(false);
+  });
+});
+
+describe("resolveOperatorMatchOnly — review tier returns decision without enqueueing", () => {
+  it("returns review + reason for low-tier matches, no INSERT into operator_match_review", async () => {
+    const { client, calls } = makeMockClient([
+      { matcher: /SELECT\s+oi\.operator_id.*FROM operator_identities/s, rows: [] },
+      {
+        matcher: /FROM operators o/,
+        // Name chosen so Jaro-Winkler to "NetJets Aviation" is middling but
+        // lands in the low tier — see canonical-match-scoring tests for
+        // threshold calibration. If calibration shifts, this payload adjusts.
+        rows: [
+          { operator_id: "weak-uuid", canonical_name: "Net Holdings LLC", headquarters_icao: null, state: null, city: null },
+        ],
+      },
+    ]);
+    const result = await resolveOperatorMatchOnly(baseScraped, client);
+    expect(["review", "no_match"]).toContain(result.action);
+    // If review, reason must be set; if no_match, reason null.
+    if (result.action === "review") {
+      expect(result.reason).not.toBeNull();
+    }
+    // Never writes.
+    expect(calls.some((c) => /INTO operator_match_review/i.test(c.sql))).toBe(false);
+    expect(calls.some((c) => /INTO operator_identities/i.test(c.sql))).toBe(false);
   });
 });

@@ -343,3 +343,99 @@ Applies to all public-schema ER tables: `operators`, `operator_identities`,
 and refresh any agent-facing view definitions that reference the bare
 `operators` name.
 
+---
+
+## Firecrawl: infra staged but not started
+
+**Discovered**: 2026-04-24, end of Stage 2a session.
+
+**State**: Lightsail (`44.197.126.96`) has Docker Engine 29.4.1 + Compose v5.1.3
+installed, Firecrawl repo cloned to `~ubuntu/firecrawl`. Stack **not started**.
+
+**Blocker**: the Lightsail box is 1.9 GB RAM and already runs prod `api` +
+`mcp` via PM2. Firecrawl self-host is a 6-service stack — api, playwright
+(Chromium pool), redis, rabbitmq, nuq-postgres, backend — with idle
+footprint around 1.5 GB. Colocated launch will OOM the prod API under
+scraping load.
+
+**Current development approach**: Option C — Firecrawl runs Mac-local
+(dev-only) until production scraping is needed. No MCP wiring yet.
+
+**Resolution**: when moving to production scraping, resize to a dedicated
+$5/mo Lightsail for Firecrawl rather than resizing the prod box. Separate
+blast radius, cheaper, ops story stays clean.
+
+**Priority**: not blocking any active ER track. Next action is a resize /
+provision decision, not debug work.
+
+---
+
+## Future: DB split — rename and extract agent state
+
+**Context**: today both `osa-data-platform` and `dumont-agent` share one
+Supabase database. `osa-data-platform/.env:OSA_MCP_READONLY_URL` and
+`dumont-agent/.env:SUPABASE_DATABASE_URL` point at the same instance.
+
+**Before production traffic**, split:
+
+1. Rename current Supabase DB to `osa-data-platform` (data-platform owns
+   it). Contains: `faa_aircraft`, `adsb_completed_legs`, `operators` +
+   identities/aliases, `canonical.*`, `faa_registry_changes`, all ingestion
+   + ER tables.
+2. Provision a new Supabase DB `dumont-agent`. Move the agent-state tables
+   there in one transaction: `deals`, `messages`, `calls`, `client_profiles`,
+   `autonomy_rules`, `processed_webhooks`, `deal_events`, `deal_outcomes`.
+
+**Env-var split at migration time**:
+
+- `osa-data-platform/.env:SUPABASE_DATABASE_URL` → renamed data-platform DB
+- `dumont-agent/.env:SUPABASE_DATABASE_URL` → new agent DB
+- MCP read-only URL (currently only in data-platform .env) stays pointed at
+  the data-platform DB
+
+Today both repos' `SUPABASE_DATABASE_URL` values are identical because the
+DBs aren't split yet. That identity is a correctness risk: a writer in one
+repo touching another repo's tables will silently succeed today and become
+a cross-DB error only after the split. Any write from `osa-data-platform`
+code to agent-state tables should be treated as a bug today, not just
+"future broken."
+
+**Cross-DB queries post-split**: for the rare case data-platform analytics
+need to read agent-state (e.g., tracking which ER review items were
+actioned), use postgres_fdw or duplicate narrow views — not a rejoined DB.
+
+**Priority**: before first production-traffic launch. Not blocking any
+current ER or backfill work.
+
+---
+
+## FAA ingest: `manufacturer` column is 100% NULL
+
+**Discovered**: 2026-04-24, Stage 2b Checkpoint 1.
+
+**Finding**: `public.faa_aircraft.manufacturer` is NULL across all 314,813
+rows. The ingest populates `model` (short code like `GALX`, `B350`, `C172`)
+and `common_name` (e.g., `GULFSTREAM G200`, `BEECHCRAFT Super King Air 350`,
+`CESSNA 172 Skyhawk`) but never writes `manufacturer`. Manufacturer is
+effectively embedded in `common_name` as the leading token.
+
+**Impact**:
+- `canonical.aircraft.manufacturer` is also 100% NULL after Stage 2b CP1
+  (correctly — we copy what the source has).
+- Stage 2c aircraft resolver cannot use manufacturer as a match signal
+  until this is fixed. Use `(model, common_name)` pair instead.
+- Stage 2b Checkpoint 3 (operator_aircraft_link backfill) is unaffected —
+  doesn't use manufacturer.
+- The serial-number collision soft-warning from Stage 2a relies on
+  `(manufacturer, serial_number)` — will produce false positives until
+  manufacturer is populated. Derive manufacturer from `common_name` in
+  the Stage 2b backfill log until the FAA ingest is fixed.
+
+**Fix**: extend `src/ingestion/faa-ingest.ts` (or wherever `faa_aircraft`
+rows are written) to populate `manufacturer` from the first whitespace-
+delimited token of `common_name` when available, or from the FAA
+manufacturer code tables if we're consuming them. Backfill existing rows
+in a follow-up data session.
+
+**Priority**: before Stage 2c aircraft resolver. Not blocking CP2/3/4.
+

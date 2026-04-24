@@ -337,6 +337,136 @@ export async function resolveOperator(
   }
 }
 
+// ── Match-only variant (Stage 2b backfill) ───────────────────────────────
+
+/**
+ * Result shape for `resolveOperatorMatchOnly` — identical scoring, zero writes.
+ * Callers (e.g., operator_aircraft_link backfill) decide what to do with the
+ * outcome without the resolver mutating anything.
+ */
+export type MatchOnlyAction = "exact" | "matched" | "review" | "no_match";
+
+export interface MatchOnlyResult {
+  action: MatchOnlyAction;
+  operatorId: string | null;
+  /** Canonical name of the top candidate, when there is one. */
+  canonicalName: string | null;
+  /** 'exact' when (source, source_id) already linked; otherwise 'high' | 'medium' | null. */
+  matchConfidence: "exact" | "high" | "medium" | null;
+  /** Top candidate score; null when no candidates. */
+  topScore: number | null;
+  /** Runner-up score for ambiguity-guard audit; null when fewer than 2 candidates. */
+  secondBestScore: number | null;
+  /** Match-scoring tier derived from topScore. */
+  tier: "high" | "medium" | "low" | "new_operator" | null;
+  /** Signals payload for the top candidate; null when no candidates. */
+  signals: MatchSignals | null;
+  /** Why the action is `review` (or null). */
+  reason: "ambiguous_runner_up" | "low_tier" | "medium_name_only" | null;
+}
+
+/**
+ * Read-only resolution: score `scraped` against canonical operators and
+ * return the match decision WITHOUT writing anything and WITHOUT ever
+ * creating a new operators row.
+ *
+ * Stage 2b backfill (`scripts/backfill-operator-aircraft-link.ts`) feeds
+ * 127K+ certificate_holder strings through this. The `new` write path from
+ * `resolveOperator` would pollute `operators` with trustee LLCs and
+ * individual owners — exactly what we don't want. Every non-match here
+ * becomes `no_match` and the caller decides whether to enqueue for review
+ * or leave as a skip audit row.
+ *
+ * The scoring and decision logic is identical to `resolveOperator` — we
+ * reuse `fetchCandidates`, `scoreCandidates`, and `decide` directly so
+ * the two paths can never drift. The only differences are: `exact` is
+ * detected via a SELECT (not the UPDATE writeExact uses), and `new` is
+ * collapsed to `no_match`.
+ */
+export async function resolveOperatorMatchOnly(
+  scraped: ScrapedRecord,
+  client?: pg.PoolClient,
+): Promise<MatchOnlyResult> {
+  const ownsClient = client === undefined;
+  const c = client ?? (await getPool().connect());
+  try {
+    // 1. Exact short-circuit: identity already linked. Read-only.
+    const existing = await c.query<{ operator_id: string; canonical_name: string }>(
+      `SELECT oi.operator_id, o.canonical_name
+         FROM operator_identities oi
+         JOIN operators o ON o.id = oi.operator_id
+        WHERE oi.source = $1 AND oi.source_id = $2`,
+      [scraped.source, scraped.sourceId],
+    );
+    if (existing.rows[0]) {
+      return {
+        action: "exact",
+        operatorId: existing.rows[0].operator_id,
+        canonicalName: existing.rows[0].canonical_name,
+        matchConfidence: "exact",
+        topScore: null,
+        secondBestScore: null,
+        tier: null,
+        signals: null,
+        reason: null,
+      };
+    }
+
+    // 2. Candidate fetch + score (shared with resolveOperator).
+    const candidates = await fetchCandidates(c, scraped);
+    const scored = scoreCandidates(scraped, candidates);
+    const decision = decide(scored);
+
+    const top = scored[0] ?? null;
+    const runnerUp = scored[1] ?? null;
+    const topScore = top?.score ?? null;
+    const tier = topScore !== null ? tierOf(topScore) : null;
+
+    if (decision.action === "new") {
+      // Match-only collapses "new" (no candidate above the low threshold)
+      // into "no_match". The caller never opens a new operators row.
+      return {
+        action: "no_match",
+        operatorId: null,
+        canonicalName: null,
+        matchConfidence: null,
+        topScore,
+        secondBestScore: runnerUp?.score ?? null,
+        tier,
+        signals: top?.signals ?? null,
+        reason: null,
+      };
+    }
+    if (decision.action === "review") {
+      return {
+        action: "review",
+        operatorId: top?.operator_id ?? null,
+        canonicalName: top?.canonical_name ?? null,
+        matchConfidence: null,
+        topScore,
+        secondBestScore: runnerUp?.score ?? null,
+        tier,
+        signals: top?.signals ?? null,
+        reason: decision.reason ?? null,
+      };
+    }
+    // matched
+    return {
+      action: "matched",
+      operatorId: top!.operator_id,
+      canonicalName: top!.canonical_name,
+      matchConfidence: decision.confidence as "high" | "medium",
+      topScore,
+      secondBestScore: runnerUp?.score ?? null,
+      tier,
+      signals: top!.signals,
+      reason: null,
+    };
+  } finally {
+    if (ownsClient) c.release();
+  }
+}
+
 async function runResolve(
   client: pg.PoolClient,
   scraped: ScrapedRecord,
