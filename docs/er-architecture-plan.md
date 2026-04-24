@@ -202,10 +202,43 @@ Public records only. Never LinkedIn. Rule: persons exist only linked to an Opera
 
 ### Current status (2026-04-24)
 
-- **Done**: Track 1 Stages 1, 2.
-- **This plan**: Track 2 Stage 2a. Track 1 Stage 4 collapses into Track 2 Stage 2a (operator_aircraft_link is the single source of truth for "who flew what when").
-- **Next sessions**: Track 2 Stage 2b (backfill), Track 1 Stage 3 (FAA GENOT + rebrand tracking), Track 3 Stage 3a (FBO schema).
+- **Done**: Track 1 Stages 1, 2. Track 2 Stage 2a (schema) + partial Stage 2b (FAA bulk CP1, ADS-B merge CP2, operator_aircraft_link CP3 — see structural ceiling finding below).
+- **This plan**: Track 2 Stage 2b finished at partial, Track 1 Stage 3 is now the critical path.
 - **Deferred**: Track 1 Stage 8 (AGE), Tracks 4 & 5 in full.
+
+## Structural ceiling of direct-registry operator resolution
+
+**Finding (Stage 2b Checkpoint 3, 2026-04-24)**: resolving `faa_aircraft.certificate_holder` against the 270-row operators canonical produces a walk rate of **~0.05% of resolver-eligible aircraft**. On 35K processed rows, only 10 `canonical.operator_aircraft_link` rows were written. This is the real ceiling of the current data model — not a bug in the resolver, not a calibration miss, not a missing operator in the canonical table.
+
+**Why**: the certificate_holder field in the FAA registry does not name the operator for any of the major aircraft populations in the US charter world.
+
+1. **Trustees hold airframes for the big charter fleets by design.** `BANK OF UTAH TRUSTEE` (1,547 aircraft), `TVPX AIRCRAFT SOLUTIONS INC TRUSTEE` (1,204), `WILMINGTON TRUST CO TRUSTEE` (601), `UMB BANK NA TRUSTEE` (460), `SOUTHERN AIRCRAFT CONSULTANCY INC TRUSTEE` (449) collectively hold the NetJets, Flexjet, Wheels Up, VistaJet fleets. Our pre-filter correctly routes these to `skipped_trustee` because matching "BANK OF UTAH TRUSTEE" to "NetJets Aviation" would require auxiliary data (OpSpec D085, operator self-disclosure, ADS-B behavioral signatures) that `certificate_holder` alone cannot provide. This is precisely the "who actually flies the plane" funnel pattern documented at the top of this plan.
+2. **Major Part 121 scheduled airlines are registered directly in their own name** (`UNITED AIRLINES INC`, `DELTA AIR LINES INC`, `AMERICAN AIRLINES INC`, `SOUTHWEST AIRLINES CO`, `FEDERAL EXPRESS CORP`), but these are deliberately absent from our operators canonical — they are scheduled carriers, not charter, and outside the brokerage scope.
+3. **Individual-owner GA aircraft** (`registrant_type = 1`, ~118K airframes) are filtered before the resolver sees them — they are owner-flown, not operator-flown. `skipped_individual` is the correct bucket.
+4. **The resolver-run residue** is LLC/Corp-registered aircraft (~137K airframes) whose certificate_holder is either the operator's own name (rare — directly-registered small Part-135 operators, ~10–100 aircraft at most) or an intermediate holding LLC that no source names as an operator (most of the residue).
+
+**Implication — direct registry resolution is a minority pathway.** The CP3 `operator_aircraft_link` population is correct but small, and will remain small under the current data model. Meaningful fleet-level operator attribution requires:
+
+- **Track 1 Stage 3** (FAA GENOT + SEC EDGAR + DOT Part 295 + state SOS) to expand operator coverage and ingest rebrand / cert-transfer events from authoritative sources. Stages 5–7 expand further into holding structures and funnel detection.
+- **Stage 2c aircraft resolver with trustee-unmask** — second resolution pathway that uses ADS-B behavioral signatures (fleet co-location, consistent HQ departure patterns), operator self-disclosure (company websites, "fleet" pages — Firecrawl pathway), and FAA OpSpec D085 ingestion to attribute trustee-held airframes to their real operators.
+
+**Stage 2b ships the audit log, not the walk.** The primary deliverable of Checkpoint 3 is `canonical.operator_aircraft_resolution_log` — a permanent audit trail that tells us exactly which certificate_holders cannot be resolved today and why. That log is Track 1 Stage 3's input for deciding which sources to prioritize (top 50 no_match strings by aircraft count name the specific expansion targets).
+
+**Revised walk-rate target**: 1–3% raw, not 15–30%. The earlier target implicitly assumed operator coverage would match the flying population — it does not, and cannot until the above pathways are built. Reporting any higher number as a success metric would be dishonest.
+
+## Resolution-log table (permanent)
+
+`canonical.operator_aircraft_resolution_log` is a **permanent** canonical-schema table, not temp/staging. Every resolution decision — matched / exact / review / no_match / skipped_* — lands here with the backfill_run_id, the scoring signals, and the full provenance. Properties:
+
+- One row per `(aircraft_id, backfill_run_id)` via a UNIQUE index — re-runs append, never overwrite
+- Foreign keys into `canonical.aircraft` (ON DELETE CASCADE), `public.operators` (SET NULL), `canonical.operator_aircraft_link` (SET NULL), `public.operator_match_review` (SET NULL)
+- Idempotency: backfill scripts check `NOT EXISTS` on `(aircraft_id)` for new-rows-only semantics by default
+- Rollback: `schema/rollback/2026-04-24-checkpoint-3-rollback.sql` filters by `backfill_run_id` to unwind a specific run
+
+Use cases beyond CP3:
+- Track 1 Stage 3 (new operator coverage) re-runs the backfill and compares new resolution_log vs old — which previously-no_match aircraft now resolve?
+- Threshold recalibration re-runs and compares decision shifts
+- Review-queue tuning reads `tier`, `score`, `second_best_score`, `reason` distributions
 
 ## Integration constraints
 

@@ -356,3 +356,37 @@ describe("resolveOperatorMatchOnly — review tier returns decision without enqu
     expect(calls.some((c) => /INTO operator_identities/i.test(c.sql))).toBe(false);
   });
 });
+
+// ── Review gate (Stage 2b Checkpoint 3 — REVIEW_GATE in match-thresholds.ts) ──
+//
+// The canEnterReview unit tests below exercise the policy directly. The
+// resolver integration case is covered by the existing "review tier returns
+// decision without enqueueing" test above, which now consistently lands on
+// no_match (rather than review) once REVIEW_GATE.requireSignal = true — the
+// test's `expect(["review", "no_match"]).toContain` tolerance holds either
+// way.
+
+describe("canEnterReview (match-thresholds config)", () => {
+  it("rejects new_operator tier regardless of signals", async () => {
+    const { canEnterReview } = await import("../src/entity-resolution/match-thresholds.js");
+    expect(canEnterReview("new_operator", { nameSim: 0.5, stateMatch: true })).toBe(false);
+  });
+  it("rejects low tier under current REVIEW_GATE.minTier='medium'", async () => {
+    const { canEnterReview } = await import("../src/entity-resolution/match-thresholds.js");
+    expect(canEnterReview("low", { nameSim: 0.65, stateMatch: true })).toBe(false);
+  });
+  it("rejects medium tier when no corroborating signal", async () => {
+    const { canEnterReview } = await import("../src/entity-resolution/match-thresholds.js");
+    expect(canEnterReview("medium", { nameSim: 0.8 })).toBe(false);
+  });
+  it("permits medium tier with a corroborating signal", async () => {
+    const { canEnterReview } = await import("../src/entity-resolution/match-thresholds.js");
+    expect(canEnterReview("medium", { nameSim: 0.8, stateMatch: true })).toBe(true);
+    expect(canEnterReview("medium", { nameSim: 0.8, cityMatch: true })).toBe(true);
+    expect(canEnterReview("medium", { nameSim: 0.8, icaoMatch: true })).toBe(true);
+  });
+  it("permits high tier with a corroborating signal", async () => {
+    const { canEnterReview } = await import("../src/entity-resolution/match-thresholds.js");
+    expect(canEnterReview("high", { nameSim: 0.95, stateMatch: true })).toBe(true);
+  });
+});

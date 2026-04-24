@@ -42,6 +42,7 @@ import {
   tierOf,
   REQUIRE_SIGNAL_AT_TIERS,
   hasCorroboratingSignal,
+  canEnterReview,
 } from "./match-thresholds.js";
 import type { Source } from "./operator-field-priority.js";
 
@@ -438,15 +439,35 @@ export async function resolveOperatorMatchOnly(
       };
     }
     if (decision.action === "review") {
+      // Review-gate (see match-thresholds.ts §"Review-queue gating"):
+      // the match-only path demotes review → no_match when the top
+      // candidate fails REVIEW_GATE. This prevents Stage 2b Checkpoint 3
+      // from flooding operator_match_review with "AIR X" vs "ACCENT AIRWAYS"
+      // style low-tier false positives. The write path (resolveOperator)
+      // does NOT apply this gate — Phase 1 backfill deliberately wants
+      // low-tier matches in the review queue so reviewers can decide.
+      if (!top || !canEnterReview(tier ?? "new_operator", top.signals)) {
+        return {
+          action: "no_match",
+          operatorId: null,
+          canonicalName: null,
+          matchConfidence: null,
+          topScore,
+          secondBestScore: runnerUp?.score ?? null,
+          tier,
+          signals: top?.signals ?? null,
+          reason: null,
+        };
+      }
       return {
         action: "review",
-        operatorId: top?.operator_id ?? null,
-        canonicalName: top?.canonical_name ?? null,
+        operatorId: top.operator_id,
+        canonicalName: top.canonical_name,
         matchConfidence: null,
         topScore,
         secondBestScore: runnerUp?.score ?? null,
         tier,
-        signals: top?.signals ?? null,
+        signals: top.signals,
         reason: decision.reason ?? null,
       };
     }

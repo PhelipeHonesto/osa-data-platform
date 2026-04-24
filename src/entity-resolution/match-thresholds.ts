@@ -95,3 +95,51 @@ export function tierOf(score: number): ScoreTier {
 export function isCalibrated(): boolean {
   return THRESHOLDS.calibrated_at !== null;
 }
+
+/**
+ * Review-queue gating.
+ *
+ * After Stage 2b Checkpoint 3 revealed that the cert_holder-as-operator-proxy
+ * walk rate is structurally capped at ~0.05% (trustees hide operator identity
+ * for all major charter fleets by design), the small number of resolver-run
+ * rows produced a review queue dominated by false positives — "AIR METHODS
+ * LLC" ↔ "ACCENT AIRWAYS LLC" style name-shape overlaps with no real-world
+ * relationship.
+ *
+ * The new review gate: a row may only enter operator_match_review when its
+ * top candidate has BOTH (a) a non-low tier and (b) at least one
+ * corroborating signal (state, city, ICAO, or phone). Without that, the
+ * match is recorded as no_match in the resolution_log — no reviewer burn.
+ *
+ * This rule lives here (not in decide()) so resolveOperatorMatchOnly and
+ * any future match-only-style caller can consult the same policy.
+ *
+ * `resolveOperator` (the write path used by Phase 1 backfill — ARGUS /
+ * Wyvern ingest) intentionally does NOT apply this gate. Phase 1 uses the
+ * resolver to onboard known real-world operators, and a low-tier name
+ * match there is a reviewer task, not a false positive to discard.
+ */
+export interface ReviewGatePolicy {
+  /** Minimum tier a match must reach to be eligible for review. */
+  readonly minTier: "medium" | "low";
+  /** If true, require at least one corroborating signal (state/city/icao/phone). */
+  readonly requireSignal: boolean;
+}
+
+export const REVIEW_GATE: ReviewGatePolicy = {
+  minTier: "medium",
+  requireSignal: true,
+};
+
+/**
+ * True when a candidate match is eligible for the review queue under
+ * `REVIEW_GATE`. Low-tier, new-operator-tier, and (when requireSignal is
+ * true) medium/high matches with no corroborating signal all fail the
+ * gate and should be recorded as no_match instead of review.
+ */
+export function canEnterReview(tier: ScoreTier, signals: MatchSignals): boolean {
+  if (tier === "new_operator") return false;
+  if (tier === "low" && REVIEW_GATE.minTier !== "low") return false;
+  if (REVIEW_GATE.requireSignal && !hasCorroboratingSignal(signals)) return false;
+  return true;
+}
