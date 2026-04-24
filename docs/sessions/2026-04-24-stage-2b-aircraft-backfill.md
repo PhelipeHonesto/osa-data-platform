@@ -69,3 +69,109 @@ Two pathways probed for operator-aircraft link expansion beyond cert_holder:
 2. **adsb_completed_legs.operator_name**: NOT a distinct pathway — it's a propagated copy of faa_aircraft.certificate_holder during the ADS-B ingest join. Top-30 distribution matches CP3 cert_holder top exactly (airlines, trustees, flight schools). Same structural ceiling as CP3. Do not pursue.
 
 Conclusion: next session does Step A only — faa_operators merge to expand canonical.operators by ~100-200 rows. target_companies stays on the followups list for post-coverage-expansion.
+
+---
+
+## Late afternoon — operator coverage + historical ER schema
+
+Picking up from the morning probe conclusion ("next session does Step A only"), this segment shipped two milestones: the realfleet operator merge that closed the CP3 coverage gap, and the operator_events historical-ER table that unblocks Stage 3 lineage work.
+
+### Milestone 1 — realfleet operator merge
+
+Commit `f211b5a` — `feat(canonical): merge faa_operators realfleet (26 operators, aircraft_count >= 20) into public.operators`.
+
+The morning probe had diagnosed CP3's 0.05% walk rate as a structural ceiling caused by canonical.operators only holding 270 rows — missing every major Part 135 fleet that doesn't have a synthetic NETJ001-style cert. The Stage-2b-followup script `backfill-operators-canonical-faa-realfleet.ts` filtered `faa_operators` by `aircraft_count >= 20 AND TRIM(UPPER(certificate_number)) != TRIM(UPPER(name))` and merged the result. 26 operators inserted with `operator_type='part_135'` and `data_confidence_score=1.0`. Run id `7286b260-6c9d-4cfc-ad70-f77e7a200931`.
+
+All 9 named target brands now in canonical: NetJets Aviation (EJA, 304 aircraft), Executive Jet Management (EJM, 176), Flexjet (LXJ, 148), JetSuite/JSX (JTL, 75), PlaneSense (PCH, 69), Wheels Up (WUP, 62), FlyExclusive (FFL, 48), VistaJet (VJA, 43), XO/JetSmarter (XSR, 35). Plus 17 more (Textron, Gulfstream, Directional Aviation Capital, JetRight, Biggin Hill, Embraer Executive Jets, Comlux, Tradewind, Contour, Thrive, Sun Country, Honeywell, JetAviation, Boutique Air, Corporate Air, Freestream, Lakeland Aero).
+
+Decisions baked into the script:
+- Three structural pushbacks against the original /plan caught before write: `canonical.operators` corrected to `public.operators` (operators table still in public, schema-move is a deferred ALTER), `type_tags=['part_135']` rejected because the CHECK constraint forbids it (used `operator_type='part_135'` instead, `type_tags=[]`), and the `dba_name` ICAO callsigns (EJA, LXJ, WUP, etc.) handled as identifiers, not aliases — they don't fit `operator_aliases.alias_type` semantics. Logged 26 callsigns to stdout for the future `icao_callsign` column on `public.operators` (followup added to phase1-followups.md).
+- Pre-filter `cert != name` removed the co-holder LLC duplicates (FLEXJET LLC, NETJETS SALES INC, WHEELS UP PARTNERS LLC, FEDERAL EXPRESS CORPORATION) that would otherwise pollute canonical with second identities for the same real entity.
+- Idempotency via `NOT EXISTS operator_identities WHERE source='faa' AND source_id=cert` plus `UNIQUE (source, source_id)`. Re-runs are no-ops.
+- Rollback by `match_evidence->>'backfill_run_id'` via `schema/rollback/2026-04-24-operators-realfleet-rollback.sql` — cascade-deletes identities + aliases via FK ON DELETE CASCADE on the operators row.
+
+Process diagnostic worth flagging: the dry-run process appeared hung for 18+ minutes during initial execution. Investigation found no DB-side residue (no locks, no idle txns, no zombie backends) — the actual issue was pino's async log destination keeping the Node event loop warm post-completion. Cosmetic, not a correctness issue. Captured in commit `94193a0` (`docs: pino logger dry-run event-loop follow-up`).
+
+Post-merge probe of the `aircraft_count BETWEEN 10 AND 19` band returned 34 candidate rows — 32% real charter, 35% pure noise (trustees, leasing LLCs, tail-number LLCs), 12% cargo (3 FedEx duplicates + Royal Air Freight), 15% uncertain. Below the 60% signal floor; recommended stop at threshold=20 and defer mid-tier merge to a curated cert-list session (not a threshold ratchet — the 12 noise rows expose a name-side filter gap that threshold-walking can't fix).
+
+### Milestone 2 — canonical.operator_events historical ER schema
+
+Commit `2e26696` — `feat(canonical): operator_events schema for historical ER`.
+
+New canonical table for the lineage layer of the operator entity. Captures discrete events that change operator identity, structure, or certificate: rebrands, M&A, cert transfers, formations, dissolutions, foreign AOC changes. Empty on arrival; population is Stage 3+ work.
+
+Design notes (full spec in `docs/er-architecture-plan.md` §"canonical.operator_events"):
+- 26 columns, 11-value `event_type` CHECK enum
+- Four nullable UUID FKs into `public.operators` (ON DELETE RESTRICT) with three text-name fallbacks for events whose parties aren't in canonical yet
+- `aoc_before` / `aoc_after` for cert state changes (NULL for rebrands by definition — cert preserved)
+- Free-text `source` matching the canonical convention (closed enum rejected — every new source would need a migration)
+- `corroborated_by` / `contradicted_by` JSONB for Two-Source Rule audit trail, same shape as `canonical.operator_aircraft_link`
+- `confidence NUMERIC(3,2)` (not TEXT enum) consistent with the rest of canonical
+- `valid_from` / `valid_to` for claim-level corrections (not bitemporal)
+- `natural_key TEXT UNIQUE` for ingestion-script idempotency
+- 10 indexes total: PK + natural_key UNIQUE + 8 query indexes (3 partial party indexes, 2 partial aoc indexes, 1 partial current-state, 2 time-anchored)
+
+Migration verification was the first session to satisfy the new three-step rule (commit `e178733` codifies it as CLAUDE.md §4): local Docker postgres:16 up→down→up cycle clean, `npm run db:migrate-pg` exit 0, then `psql \d+ canonical.operator_events` against Supabase confirmed the live shape. canonical schema went from 5 tables to 6.
+
+The rollback script (`schema/rollback/2026-04-24-operator-events-rollback.sql`) carries a refused-if-rows safety probe — future rollback against a populated table halts loudly rather than silently dropping data. Pattern to repeat in every future canonical rollback script.
+
+### Milestone 3 — process discipline codified
+
+Commit `e178733` — `docs(claude): migration-verification rule + db:test followup`.
+
+CLAUDE.md §4 now mandates the three-step migration-verification rule (local Docker cycle + migrate-pg exit 0 + explicit production object check). Triggered by Stage 2a's morning incident: three commits shipped with passing local tests, but the Supabase migrate-pg step was silently dropped between rollback test and push, missing tables only caught ~6 hours later during Stage 2b pre-flight.
+
+phase1-followups.md gained a "npm run db:test helper" entry to track wrapping the ad-hoc Docker ritual into a single npm script. Quality-of-life only, not blocking.
+
+### Session totals (full day)
+
+- **Commits**: 11 total on `main`
+  - Morning (Stage 2a + 2b CP1/CP2/CP3 + probe addendum): 7
+    - Stage 2a (canonical aircraft + temporal-link pattern): 3 commits
+    - Stage 2b CP1 (FAA bulk → canonical.aircraft, 314K rows): 1
+    - Stage 2b CP2 (ADS-B identity merge): 1
+    - Stage 2b CP3 (operator_aircraft_link, 0.05% walk rate, structural-ceiling diagnosis): 1
+    - Probe-findings addendum + session-notes restart: 1
+  - Late afternoon (this segment): 4 — `f211b5a`, `94193a0`, `2e26696`, `e178733`
+- **Schema objects added today**:
+  - `canonical.aircraft`, `canonical.aircraft_identities`, `canonical.aircraft_aliases` (Stage 2a)
+  - `canonical.operator_aircraft_link`, `canonical.operator_aircraft_resolution_log` (Stage 2a)
+  - `canonical.operator_events` (this segment)
+  - 6 new tables, all in canonical schema. Total canonical tables now 6 (was 0 at start of day).
+- **Data shipped**:
+  - `canonical.aircraft`: 314K rows from FAA bulk + ADS-B identity merge
+  - `canonical.operator_aircraft_link`: 17 rows (CP3 walk rate ceiling)
+  - `public.operators`: 270 → 296 (+26 from realfleet merge)
+  - `public.operator_identities` (source='faa'): 50 → 76 (+26)
+- **Test count**: 440 passing, 8 skipped (was 421 at start of day; +19 from realfleet test file)
+- **TypeScript**: `npx tsc --noEmit` clean throughout
+
+### Canonical state at session close
+
+| Table | Rows | Notes |
+|-------|------|-------|
+| `canonical.aircraft` | 314K | FAA bulk + ADS-B merged |
+| `canonical.aircraft_identities` | ~314K + ADS-B identities | Multi-source linkage |
+| `canonical.aircraft_aliases` | small | Alternate tail / model variants |
+| `canonical.operator_aircraft_link` | 17 | CP3 walk; structural ceiling at ~0.05% |
+| `canonical.operator_aircraft_resolution_log` | full CP3 audit trail | Permanent log |
+| `canonical.operator_events` | 0 | New today; empty on arrival |
+| `public.operators` | 296 | +26 realfleet today |
+| `public.operator_identities` | 76 (source='faa') | +26 realfleet today |
+| `public.operator_aliases` | unchanged | Skipped — ICAO callsigns aren't aliases |
+
+### Natural next session entry point
+
+**Stage 2c — agent-facing views over the canonical aircraft layer**, specifically:
+
+1. `v_aircraft_current_operator` — per-aircraft current operator from `operator_aircraft_link WHERE valid_to IS NULL`. The agent-side surface that lets Dumont answer "who flies N123AB" without joining four tables.
+2. `v_aircraft_history` — per-aircraft historical operators with date ranges. Time-aware lookup for sourcing context.
+3. Re-run CP3 with the expanded operator coverage (270 → 296 operators, +9 named brands). The walk rate should jump meaningfully — NetJets, Flexjet, PlaneSense, etc. were the main absent-from-canonical contributors. Compare new resolution_log vs prior to quantify the lift.
+
+Operator_events stays empty until Stage 3 (FAA GENOT + SEC EDGAR integrations). Stage 3 is gated on Firecrawl wiring — without web scraping, ~70% of source pathways are unreachable.
+
+Followups outstanding (all in `docs/phase1-followups.md`):
+- icao_callsign column on `public.operators` (before Stage 2c trustee-unmask)
+- pino logger event-loop fix for dry-run scripts (cosmetic)
+- npm run db:test helper for migration sessions (quality-of-life)
+- Pre-existing followups from morning: alias-table audit, manufacturer-NULL slip, target_companies pathway, and the deeper faa-operators-full ingestion rewrite that would solve the noise problem at source.
