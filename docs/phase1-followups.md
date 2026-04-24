@@ -308,3 +308,23 @@ Two opportunities identified but deliberately left alone:
 - Fix: skip unless the suite genuinely needs trimming. Savings
   (~100 LOC out of 13,657) are not worth the churn.
 - **Priority**: never, unless a rebalance forces it.
+
+---
+
+## Test-count baseline drift (post-split)
+
+**Discovered**: 2026-04-24, Stage 2a aircraft ER session.
+
+**Finding**: prior baseline reference of "640 passing tests" appears to be the
+pre-split count from `dumont-agent` before `osa-data-platform` was extracted.
+Current `npm test` here reports **375 passed, 8 skipped, 0 failed**. The delta
+is tests that moved with the agent layer, not a regression.
+
+**Impact**: docs and checklists referencing "628+ / 640 tests must pass" are
+stale. Effective baseline for this repo going forward is 375.
+
+**Fix**: opportunistically update stale references (CLAUDE.md, phase-verification
+docs, commit-checklist language). Not blocking Stage 2a.
+
+**Priority**: cosmetic.
+

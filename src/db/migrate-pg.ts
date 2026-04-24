@@ -39,14 +39,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // schema/ lives at repo root; migrate-pg.ts lives at src/db/ — go up two levels.
 const SCHEMA_DIR = resolve(__dirname, "../../schema");
 
-// Load order: extensions first, then dependencies, then additive migrations.
-// Within each folder, files load alphabetically.
+// Load order: extensions first, then namespace schemas, then dependencies,
+// then additive migrations. Within each folder, files load alphabetically.
+// schema/rollback/ is intentionally NOT listed — down-migrations apply manually.
 const LOAD_ORDER = [
   "_extensions.sql",
+  "_schemas.sql",
   "transactional/",
   "silver/",
   "analytics/",
   "gold/canonical/",
+  "canonical/",
   "gold/infra/",
   "gold/views/",
   "migrations/",
@@ -83,14 +86,22 @@ function concatSchema(paths: string[]): string {
   return parts.join("\n\n");
 }
 
-/** Extract the table names declared in the concatenated schema. */
-function extractTableNames(sql: string): string[] {
-  const re = /CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+([a-zA-Z_][a-zA-Z0-9_]*)/gi;
-  const names = new Set<string>();
+/** Extract [schema.]table pairs declared in the concatenated schema. */
+function extractTableNames(sql: string): Array<{ schema: string; name: string }> {
+  const re = /CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+(?:([a-zA-Z_][a-zA-Z0-9_]*)\.)?([a-zA-Z_][a-zA-Z0-9_]*)/gi;
+  const seen = new Set<string>();
+  const out: Array<{ schema: string; name: string }> = [];
   for (const m of sql.matchAll(re)) {
-    if (m[1]) names.add(m[1]);
+    const schema = m[1] ?? "public";
+    const name = m[2];
+    if (!name) continue;
+    const k = `${schema}.${name}`;
+    if (!seen.has(k)) {
+      seen.add(k);
+      out.push({ schema, name });
+    }
   }
-  return [...names].sort();
+  return out.sort((a, b) => `${a.schema}.${a.name}`.localeCompare(`${b.schema}.${b.name}`));
 }
 
 async function main(): Promise<void> {
@@ -115,16 +126,22 @@ async function main(): Promise<void> {
   await pool.query(schema);
   console.log("[migrate-pg] Schema executed successfully.");
 
-  const tablesResult = await pool.query(`
-    SELECT tablename FROM pg_tables
-    WHERE schemaname = 'public'
-    ORDER BY tablename
-  `);
-  const tables = tablesResult.rows.map((r) => (r as { tablename: string }).tablename);
-  console.log(`\n[migrate-pg] ${tables.length} tables present in public schema:`);
-  for (const t of tables) console.log(`  - ${t}`);
+  const expectedSchemas = Array.from(new Set(expected.map((t) => t.schema)));
+  const tablesResult = await pool.query<{ schemaname: string; tablename: string }>(
+    `SELECT schemaname, tablename FROM pg_tables
+     WHERE schemaname = ANY($1::text[])
+     ORDER BY schemaname, tablename`,
+    [expectedSchemas],
+  );
+  const present = new Set(tablesResult.rows.map((r) => `${r.schemaname}.${r.tablename}`));
+  console.log(
+    `\n[migrate-pg] ${tablesResult.rows.length} tables present across schemas [${expectedSchemas.join(", ")}]:`,
+  );
+  for (const r of tablesResult.rows) console.log(`  - ${r.schemaname}.${r.tablename}`);
 
-  const missing = expected.filter((t) => !tables.includes(t));
+  const missing = expected
+    .map((t) => `${t.schema}.${t.name}`)
+    .filter((k) => !present.has(k));
   if (missing.length > 0) {
     log.error({ missing }, "expected tables missing");
   } else {
