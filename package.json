@@ -41,7 +41,8 @@
     "operators:review": "tsx scripts/operators-review.ts",
     "dq:check": "tsx scripts/dq-check.ts",
     "db:migrate-pg": "tsx src/db/migrate-pg.ts",
-    "db:migrate-data": "tsx src/db/migrate-data.ts"
+    "db:migrate-data": "tsx src/db/migrate-data.ts",
+    "mcp:serve": "tsx src/mcp/cli.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1029.0",
