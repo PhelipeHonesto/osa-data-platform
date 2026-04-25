@@ -14,6 +14,13 @@
 -- directly — Stage 3 adds v_operator_lineage_current / v_operator_history
 -- agent-facing views.
 --
+-- ── Deprecation note (2026-04-25) ──────────────────────────────────────
+-- event_type='cert_transfer' is removed from the CHECK list as of
+-- migration 2026-04-25-001 — cert lineage now lives in
+-- canonical.certificate_events (event-edge variant). Architectural
+-- decision logged in commit 3b37d7f. Existing rows: zero on arrival.
+-- The matrix row below is retained for historical reference only.
+--
 -- ── Source naming convention ───────────────────────────────────────────
 -- `source` is free-text; ingestion scripts populate it with stable slugs:
 --   faa_genot                     FAA General Notice bulletins
@@ -37,8 +44,10 @@
 --                   | (acquirer)                         | (acquired)
 --   merger          |    —    |      ✓      |     ✓     |     ✓       |     —      |     —
 --   spinoff         |    —    |      ✓      |     ✓     |      —      |     —      |     ✓
---   cert_transfer   |    —    |      ✓      |     ✓     |      —      |     ✓      |     ✓
+--   cert_transfer*  |    —    |      ✓      |     ✓     |      —      |     ✓      |     ✓
 --                   |         |   (from)    |    (to)
+--                   |         * deprecated 2026-04-25 — refused at write time;
+--                   |           use canonical.certificate_events instead.
 --   cert_surrender  |   ✓     |      —      |     —     |      —      |     ✓      |    NULL
 --   cert_revocation |   ✓     |      —      |     —     |      —      |     ✓      |    NULL
 --   dissolution     |   ✓     |      —      |     —     |      —      |     ✓      |    NULL
@@ -59,7 +68,6 @@ CREATE TABLE IF NOT EXISTS canonical.operator_events (
       'acquisition',
       'merger',
       'spinoff',
-      'cert_transfer',
       'cert_surrender',
       'cert_revocation',
       'dissolution',
