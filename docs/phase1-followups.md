@@ -608,3 +608,37 @@ Plus a test case each.
 **Priority**: HIGH. This is the unblocker for Stage 2c. Schedule for a dedicated next-session block when there's focus for ingest pipeline changes.
 
 **Out of scope today**: production ingest changes are not end-of-day work.
+
+---
+
+## Reconcile --write vs --commit naming across backfill scripts
+
+**Discovered**: 2026-04-24, end of Stage 2c session.
+
+**Finding**: scripts/backfill-* invoke writes via different flags. CP3's `backfill-operator-aircraft-link.ts` uses `--write`; the realfleet, icao_callsign, and callsign-pathway scripts use `--commit`. Both are dry-run-by-default but the muscle memory between sessions is fragile — mistyping `--commit` for a `--write`-only script silently runs as dry-run, and vice versa.
+
+**Fix**: pick one (recommend `--commit` since the newer scripts use it and the verb matches DB transaction semantics) and migrate the rest. Add an alias for the deprecated flag with a deprecation warning, or break compatibility in one go.
+
+**Priority**: quality-of-life, low. Mostly affects future-Claude muscle memory.
+
+---
+
+## Stage 2c v2: confidence upgrade on re-run
+
+**Discovered**: 2026-04-24, Stage 2c initial ship.
+
+**Finding**: The current Stage 2c backfill (`scripts/backfill-operator-aircraft-link-from-callsign.ts`) writes each (aircraft, operator) attribution at a confidence determined by position count from a single run. On re-run, the NOT EXISTS pre-filter (which avoids EXCLUDE-constraint violations) skips already-attributed aircraft entirely — meaning confidence stays frozen at the value of the first run, even if subsequent ingestion brings 100x more corroborating positions.
+
+**Fix**: Switch the re-run path from "skip" to "update". When an already-attributed `(aircraft_id, operator_id, role='operator', valid_to IS NULL)` row exists, instead of inserting a new row, UPDATE the existing row's:
+
+- `evidence.position_count`: cumulative count from all observation windows
+- `evidence.callsign_observed`: union of distinct callsigns seen
+- `evidence.last_seen`: most recent observation across all runs
+- `confidence`: recomputed from cumulative position count
+- `corroborated_by`: append the new run's source/timestamp
+
+`valid_from` stays unchanged (original first_seen). `valid_to` stays NULL. The EXCLUDE constraint is unaffected because we're updating the same row, not inserting a new one.
+
+This is update-in-place, NOT close-then-insert. Close-then-insert is for operator changes (the aircraft moves from one operator to another). Update-in-place is for "same operator, more evidence."
+
+**Priority**: Medium. Activates value as `adsb_positions` accumulates. Build when the live ingest is back to writing positions and there's multi-day data to corroborate against. Pre-condition: position count grows enough that re-runs would meaningfully shift confidence (probably 1–2 weeks of natural ingest after worker resumes).
