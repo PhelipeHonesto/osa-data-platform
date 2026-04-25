@@ -304,3 +304,89 @@ Stage 2c was shipped same-session against `adsb_positions` directly (commit `d48
 The "callsign pathway blocked" framing is preserved above because the diagnosis-correction sequence is itself useful: the morning probe of `operator_name` was correct for that field but didn't characterize the entire ADS-B ingest. The right question was "where in the schema is callsign data" — and the answer is `adsb_positions`, which we'd have found via `describe-schema`.
 
 The leg-aggregator-side enhancement (carry callsign forward into `adsb_completed_legs`) is still a valid follow-up — would make queries hit 21M historical legs instead of the `adsb_positions` snapshot. Lower priority than initially framed; queue when `adsb_completed_legs` becomes the hot query path.
+
+## Session pause point (late evening, 2026-04-24)
+
+Full day's commits on origin/main since d109864 baseline. Current HEAD: fde5a96.
+
+### What shipped this session (16 commits total)
+
+Morning + early afternoon (covered in earlier addenda):
+
+- Stage 2a canonical aircraft schema + temporal link pattern + docs
+- Stage 2b CP1 — FAA bulk into canonical.aircraft (314K)
+- Stage 2b CP2 — ADS-B identity merge
+- Stage 2b CP3 — partial walk, structural ceiling diagnosis
+- Probe findings addendum
+
+Late afternoon + evening:
+
+- `f211b5a` — realfleet merge (270 → 296 operators, +26 major brands)
+- `94193a0` — pino logger dry-run followup
+- `2e26696` — canonical.operator_events schema (historical ER primitive)
+- `e178733` — CLAUDE.md §4 migration-verification rule + db:test followup
+- `511d5f0` — late-afternoon session arc notes
+- `6778621` — CP3 --re-resolve-no-match flag (code shipped, not executed)
+- `5df8e39` — operators.icao_callsign column + backfill (26 codes)
+- `9d9115b` — docs(stage-2c): callsign pathway blocked (LATER CORRECTED; see below)
+- `d48014d` — Stage 2c operator_aircraft_link from ADS-B callsign pathway (231 rows, 14 operators, trustee unmask verified)
+- `fde5a96` — docs(stage-2c): corrected earlier "blocked" framing after same-session schema inspection discovered adsb_positions.callsign IS populated
+
+### Canonical state at pause
+
+- `public.operators`: 296 (26 with `icao_callsign`)
+- `public.operator_identities` (source='faa'): 76
+- `canonical.aircraft`: 314K
+- `canonical.aircraft_identities`: ~440K (FAA + ADS-B)
+- `canonical.operator_aircraft_link`: 241 rows (10 CP3 + 231 Stage 2c)
+- `canonical.operator_aircraft_resolution_log`: ~35K rows (CP3 audit)
+- `canonical.operator_events`: 0 rows, schema live, awaits Stage 3+ population
+
+### Tests
+
+477 passing, 8 skipped. `npx tsc --noEmit` clean.
+
+### Queued for next session
+
+**Immediate** (5 min each):
+
+1. **Curated mid-tier operator merge.** Deferred-list in this file has the 12 target cert numbers: SLH, KFS, LJY, NJM, JCY, XFL, JTZ, SIS, CYO, CFS, BRG, USC. Pattern: variant of `backfill-operators-canonical-faa-realfleet.ts` with explicit cert-number list instead of aircraft_count threshold. Handle canonical-name dups (Jet Linx + Northern Jet likely have synthetic-cert seeds). After merge:
+   - Re-run `backfill-operators-icao-callsign.ts` (idempotent)
+   - Re-run `backfill-operator-aircraft-link-from-callsign.ts` (idempotent, picks up new operators' attributions)
+
+2. **CP3 re-resolve run.** Flag exists (commit `6778621`). Command:
+   ```
+   npx tsx scripts/backfill-operator-aircraft-link.ts \
+     --re-resolve-no-match --write > /tmp/cp3-rerun.log 2>&1 &
+   ```
+   Background, ~2.5h wall-clock. Measures lift from 270 → 296 operator expansion against the ~13K CP3 no_match rows from this morning.
+
+**Medium**:
+
+3. **Stage 2c v2 — confidence upgrade on re-run** (documented in `phase1-followups.md`). Waits for live ingestion to resume and `adsb_positions` to accumulate.
+
+4. **adsb_positions ingestion resume.** adsb.lol repo is still publishing daily tarballs. Pulling the last week's files feeds fresh positions → Stage 2c re-run picks up more attributions. Not a code change, an ops change.
+
+**Larger next sessions**:
+
+5. FBO canonical schema (Track 3 Stage 3a)
+6. Airport canonical (`faa_airports` already partially staged)
+7. Track 1 Stage 3 — populating `operator_events` from FAA GENOT + SEC EDGAR + corporate websites (gated on Firecrawl activation)
+
+### Key architectural discipline that paid off today
+
+- **Context reset mid-session** (post-Stage 2b CP3) — fresh Claude caught 4 structural pushbacks on my `operator_events` schema that would have otherwise shipped with errors
+- **Schema inspection reflex** via `describe_schema` MCP — caught the callsign-in-wrong-table mistake within the same session
+- **Migration-verification rule** (`CLAUDE.md §4`) shipped today, demonstrated to work via two canonical migrations
+- **Refused-if-populated rollback guardrails** on canonical tables
+- **Session-notes-as-pattern** — every substantial stage gets a `docs/sessions/YYYY-MM-DD` file that future sessions read
+
+### Session discipline notes
+
+- Two convention slips logged: `--write` (CP3) vs `--commit` (realfleet, icao-callsign, callsign-pathway). Reconciliation followup in `phase1-followups.md`.
+- `operator_name` in `adsb_completed_legs` is a propagated copy of `certificate_holder` — don't confuse it with ADS-B callsign data.
+- `icao_hex` format varies: bare lowercase majority, tilde-prefix (`~`) for non-standard Mode S addresses; normalize with `LOWER(REGEXP_REPLACE(x, '^~', ''))`.
+
+### Deferred ICAO callsigns (future curated merges)
+
+113 rows in `faa_operators` with 3-letter `dba_name` values not yet in canonical. Full list in `/tmp/icao-commit.log` on this machine. Top 12 green rows queued for next session's curated merge (see above).
