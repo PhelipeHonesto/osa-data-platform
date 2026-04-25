@@ -586,3 +586,25 @@ Plus a test case each.
 **Fix**: add `npm run db:test` script that wraps the cycle. Spin up postgres:16 (or pgvector/pgvector:pg16 when needed), apply schema/_schemas.sql + a stub for FK targets, apply the file specified by `--migration=path`, verify via `\d+`, apply the matching rollback, re-apply the migration, tear down. Returns non-zero on any step failure.
 
 **Priority**: quality-of-life. Adds friction reduction across every future migration. Not blocking — ad-hoc pattern is documented in CLAUDE.md §4.
+
+---
+
+## ADS-B ingest: persist Mode S flight_id (callsign) per leg
+
+**Discovered**: 2026-04-24, end of Stage 2b session.
+
+**Finding**: `adsb_completed_legs.operator_name` is a propagated copy of `faa_aircraft.certificate_holder`, not the ADS-B Mode S flight identifier. The squawked callsign (EJA1234, LXJ2345, etc.) is broadcast by every transponder but currently discarded by leg aggregation. Probe across 2,024,897 trustee legs returned 0 bare callsign matches and 461 prefix-with-digit matches (0.023%) — below the noise floor.
+
+**Impact**: Stage 2c trustee unmask via `icao_callsign` matching is blocked. The `icao_callsign` column on operators (shipped 2026-04-24) cannot be used for unmask without this ingest change. This is the single biggest contributor to operator-aircraft walk-rate gain. Without it, walk rate stays bounded by the direct-registration pathway (~50–300 link rows total even with full operator coverage).
+
+**Fix**:
+
+- Add `callsign TEXT` column to `adsb_completed_legs` (and/or `adsb_aircraft_state` for live state)
+- Modify the ingest worker to capture `flight_id` from raw ADS-B and aggregate per leg (most frequent? first? all distinct as JSONB? — design decision in the unblock session)
+- Index on callsign for JOIN performance, likely a partial index `WHERE callsign IS NOT NULL`
+- Migration verification per CLAUDE.md §4 (local Docker up→down→up + Supabase migrate-pg + describe-schema verify)
+- Forward-only ingest. Historical S3 reprocess is a separate, multi-week scope.
+
+**Priority**: HIGH. This is the unblocker for Stage 2c. Schedule for a dedicated next-session block when there's focus for ingest pipeline changes.
+
+**Out of scope today**: production ingest changes are not end-of-day work.

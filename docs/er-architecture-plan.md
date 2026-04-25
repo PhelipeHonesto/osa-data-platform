@@ -226,6 +226,23 @@ Public records only. Never LinkedIn. Rule: persons exist only linked to an Opera
 
 **Revised walk-rate target**: 1–3% raw, not 15–30%. The earlier target implicitly assumed operator coverage would match the flying population — it does not, and cannot until the above pathways are built. Reporting any higher number as a success metric would be dishonest.
 
+### Pathway 2: ICAO callsign unmask — blocked, needs ingest change
+
+Mechanism: trustee-held aircraft (BANK OF UTAH, TVPX, etc.) squawk their operator's ICAO callsign during flight (NetJets aircraft squawk EJA1234, Flexjet aircraft squawk LXJ2345, etc.). Joining the squawked callsign back to `operators.icao_callsign` recovers operator attribution.
+
+Data dependency: ADS-B Mode S flight identifier (the callsign), broadcast by every transponder, currently NOT persisted in `adsb_completed_legs`. Verified 2026-04-24: `operator_name` in legs is a propagated copy of FAA `certificate_holder`, not the squawked callsign. The end-of-day Stage 2c probe (probe 4 across 2,024,897 trustee legs) found 0 bare callsign matches and 461 prefix-with-digit matches — 0.023%, below the noise floor.
+
+To unblock:
+
+1. Modify `src/ingestion/adsb-leg-aggregator.ts` (or equivalent leg builder) to persist callsign per leg.
+2. Add `callsign TEXT` column to `adsb_completed_legs` schema (and likely `adsb_aircraft_state` for live state).
+3. Index on `(callsign)` for the JOIN query pattern. Likely also a partial index `WHERE callsign IS NOT NULL` for the hot path.
+4. Forward-only: historical 21M legs have no callsign data. S3 raw-archive reprocess is multi-week scope, deferred.
+
+Estimated unblock: 1 session for ingest change + schema migration. Then 30–60 days of natural ingest volume to accumulate enough callsign coverage. Then Stage 2c backfill becomes a clean SQL job: `JOIN operators ON operators.icao_callsign = SUBSTRING(callsign FROM '^([A-Z]{3})')`.
+
+This pathway, when unblocked, is expected to recover operator attribution for the ~7,000 trustee-held aircraft that account for ~2M legs in the existing data — the bulk of the structural ceiling that CP3 surfaced. The `icao_callsign` column on `public.operators` (shipped 2026-04-24) is the lookup target; the 26 callsigns mapped today (EJA, LXJ, WUP, PCH, VJA, FFL, XSR, JTL, EJM, ...) are exactly what the future ingest-side `flight_id` will JOIN against.
+
 ## Resolution-log table (permanent)
 
 `canonical.operator_aircraft_resolution_log` is a **permanent** canonical-schema table, not temp/staging. Every resolution decision — matched / exact / review / no_match / skipped_* — lands here with the backfill_run_id, the scoring signals, and the full provenance. Properties:

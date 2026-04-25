@@ -267,3 +267,30 @@ Notable categorizations from inspection of the full 113-row list:
 Next curated merge planning: filter the 113 deferred to pure-Part-135-charter (~30 operators), exclude government/corporate/cargo/borderline. Decision on medevac scope is its own conversation — likely a small follow-up that adds 'medevac' to the `operator_type` CHECK and merges EMD + CMD with that classification.
 
 The full 113-row deferred list was preserved in `/tmp/icao-commit.log` from this run; the list is stable across re-runs and can be regenerated any time via `npm run operators:backfill-icao-callsign` (dry-run).
+
+### Stage 2c probe — callsign pathway blocked by ingest pipeline
+
+After shipping the `icao_callsign` column, probed whether `adsb_completed_legs.operator_name` carries ADS-B flight identifiers (callsigns like EJA1234). Result: it does NOT.
+
+`operator_name` is a propagated copy of `faa_aircraft.certificate_holder`, populated during ADS-B ingest join. For trustee-held aircraft, `operator_name` is the trustee string verbatim ("TVPX AIRCRAFT SOLUTIONS INC TRUSTEE", "BANK OF UTAH TRUSTEE", etc.).
+
+Probe 4 (trustee aggregate, 2,024,897 legs across 6,992 distinct trustee aircraft):
+
+- Legs with bare 3-letter callsign: 0
+- Legs with 3-letter prefix + digit: 461 (0.023%)
+- Legs with NULL operator_name: 3,075
+- Sample of 10 highest-traffic trustee aircraft (probe 5): every single one shows `operator_name` = trustee string verbatim. Top: N269TD (TVPX) 4,663 legs, N264SV (BANK OF UTAH) 3,341, N6233D (GRAUERT RITTER) 2,576, N857MB (TVPX) 2,473, N46211 (CARVER CLARENCE K TRUSTEE) 2,320.
+
+The ADS-B Mode S "flight identifier" (the actual callsign squawked in flight) is broadcast by the aircraft but is currently discarded by our leg aggregation pipeline.
+
+Stage 2c trustee unmask via callsigns requires:
+
+1. Modify ADS-B ingest worker to persist `flight_id` per leg (likely a `callsign TEXT` column on `adsb_completed_legs`, populated as the most-frequent flight_id observed during the leg).
+2. Forward-only: existing 21M historical legs have no callsign data and won't backfill (unless we re-process from S3 raw archives, which is multi-week scope).
+3. After 30–60 days of new ingest with callsign persisted, enough volume accumulates for meaningful unmask coverage.
+
+The `icao_callsign` column on operators (shipped earlier today) is NOT wasted work — it's the lookup target for the future pathway. The 26 callsigns mapped today (EJA, LXJ, WUP, etc.) are exactly what the future ingest-side `flight_id` will JOIN against.
+
+Performance note: probes against `operator_name` require sequential scan (no trigram index — see existing phase1-followups). 30-second probe time on 21M rows. Future Stage 2c queries should not take this shape — they should hit a `callsign` column index, not regex against the propagated `operator_name`.
+
+Followup captured in `docs/phase1-followups.md` §"ADS-B ingest: persist Mode S flight_id (callsign) per leg" as HIGH priority. Architecture impact captured in `docs/er-architecture-plan.md` §"Pathway 2: ICAO callsign unmask — blocked, needs ingest change" under the structural-ceiling section.
