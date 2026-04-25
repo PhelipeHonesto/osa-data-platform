@@ -2,9 +2,16 @@
 -- Architectural decision logged 2026-04-25 in commit 3b37d7f. Schema spec:
 -- docs/er/certificate.md. Pattern: docs/temporal-link-pattern.md.
 --
--- Six tables bundled here in dependency order so the canonical/ folder load
+-- Seven tables bundled here in dependency order so the canonical/ folder load
 -- (alphabetical) resolves FKs correctly. Mirrors the aircraft.sql bundling
 -- pattern (aircraft + identities + aliases in one file).
+--
+-- The 7th table (aircraft_on_certificate_pending) was added in Track 6
+-- Step 2b as a sidecar for D085 (cert × tail) pairs whose tail does not
+-- resolve to a canonical.aircraft row at ingest time. Keeping it bundled
+-- here (rather than in its own file) sidesteps a load-order issue:
+-- alphabetical loading would have placed aircraft_on_certificate_pending.sql
+-- before certificates.sql, breaking the cert_id FK.
 --
 -- Empty on arrival. Population is Track 6 Step 2+ (FAA Air Carrier DB,
 -- OpSpec D085 fleet auth, DOT Part 295/298 corroboration, ARGUS/Wyvern).
@@ -343,3 +350,75 @@ CREATE INDEX IF NOT EXISTS idx_certificate_events_successor
 CREATE INDEX IF NOT EXISTS idx_certificate_events_current
   ON canonical.certificate_events (event_type, event_date)
   WHERE valid_to IS NULL;
+
+
+-- ── canonical.aircraft_on_certificate_pending ─────────────────────────────
+-- Sidecar for D085 (cert × tail) pairs whose tail did not resolve to a
+-- canonical.aircraft row at Step 2b ingest time. Common reasons:
+--   - Foreign-registered aircraft on US Part 135 leases (no FAA-registry row)
+--   - Aircraft deregistered before the canonical.aircraft FAA-registry snapshot
+--   - Tail re-registered with a new N-number after a D085 snapshot recorded
+--     the prior tail (no historical-tail mechanism exists yet — Step 2e job)
+--   - Malformed tail in D085 (data quality)
+--
+-- Step 2e (DEREG ingestion + canonical.aircraft_aliases population) re-resolves
+-- these by setting resolved_at + resolved_to_aircraft_id; a follow-up promotes
+-- the resolved row into canonical.aircraft_on_certificate proper.
+--
+-- Kept bundled in this file rather than its own .sql to keep the FK to
+-- canonical.certificates(cert_id) ahead of it in alphabetical load order.
+CREATE TABLE IF NOT EXISTS canonical.aircraft_on_certificate_pending (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  cert_id UUID NOT NULL REFERENCES canonical.certificates(cert_id) ON DELETE RESTRICT,
+
+  -- Tail as observed in D085 vs. canonical-form (UPPER + TRIM). Both kept
+  -- so quality reviews can see what the source published before normalization.
+  tail_number_as_provided TEXT NOT NULL,
+  tail_number_normalized TEXT NOT NULL,
+
+  -- Mirrors aircraft_on_certificate window shape so a future SELECT into
+  -- aircraft_on_certificate (after Step 2e resolution) is a column-for-column
+  -- copy with no derivation work.
+  valid_from DATE NOT NULL,
+  valid_to DATE,
+  CHECK (valid_to IS NULL OR valid_to > valid_from),
+
+  source TEXT NOT NULL,
+  source_url TEXT,
+  source_timestamp TIMESTAMPTZ,
+  ingestion_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  evidence JSONB,
+
+  -- Why the row landed here. CHECK enforced; expand as new resolution
+  -- pathways come online (e.g. 'foreign_reg_no_faa_row' once foreign-registry
+  -- ingestion lands).
+  reason TEXT NOT NULL
+    CHECK (reason IN (
+      'tail_not_in_canonical_aircraft',
+      'malformed_tail',
+      'cert_not_in_canonical_certificates'
+    )),
+
+  -- Resolution audit. Both NULL while pending; both set together once Step 2e
+  -- (or manual triage) lifts the row. CHECK keeps the pair consistent.
+  resolved_at TIMESTAMPTZ,
+  resolved_to_aircraft_id UUID REFERENCES canonical.aircraft(aircraft_id) ON DELETE RESTRICT,
+  CHECK (
+    (resolved_at IS NULL AND resolved_to_aircraft_id IS NULL)
+    OR (resolved_at IS NOT NULL AND resolved_to_aircraft_id IS NOT NULL)
+  ),
+
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  schema_version INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_aocp_cert_valid_from
+  ON canonical.aircraft_on_certificate_pending (cert_id, valid_from DESC);
+CREATE INDEX IF NOT EXISTS idx_aocp_tail_normalized
+  ON canonical.aircraft_on_certificate_pending (tail_number_normalized);
+CREATE INDEX IF NOT EXISTS idx_aocp_unresolved
+  ON canonical.aircraft_on_certificate_pending (cert_id)
+  WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_aocp_reason
+  ON canonical.aircraft_on_certificate_pending (reason);
