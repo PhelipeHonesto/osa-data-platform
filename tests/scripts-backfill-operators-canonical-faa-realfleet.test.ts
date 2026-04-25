@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   parseArgs,
+  parseCertNumbersList,
   isIcaoCallsign,
   normalizeAlias,
   decideAliasAction,
@@ -10,17 +11,25 @@ import {
 } from "../scripts/backfill-operators-canonical-faa-realfleet.js";
 
 describe("parseArgs", () => {
-  it("defaults to dry run with threshold=20", () => {
-    expect(parseArgs([])).toEqual({ commit: false, threshold: 20 });
+  it("defaults to dry run with threshold=20 and empty cert list", () => {
+    expect(parseArgs([])).toEqual({ commit: false, threshold: 20, certNumbers: [] });
   });
 
   it("reads --commit", () => {
-    expect(parseArgs(["--commit"])).toEqual({ commit: true, threshold: 20 });
+    expect(parseArgs(["--commit"])).toEqual({ commit: true, threshold: 20, certNumbers: [] });
   });
 
   it("reads --threshold=N", () => {
-    expect(parseArgs(["--threshold=10"])).toEqual({ commit: false, threshold: 10 });
-    expect(parseArgs(["--threshold=5", "--commit"])).toEqual({ commit: true, threshold: 5 });
+    expect(parseArgs(["--threshold=10"])).toEqual({
+      commit: false,
+      threshold: 10,
+      certNumbers: [],
+    });
+    expect(parseArgs(["--threshold=5", "--commit"])).toEqual({
+      commit: true,
+      threshold: 5,
+      certNumbers: [],
+    });
   });
 
   it("rejects non-numeric and zero/negative thresholds", () => {
@@ -29,8 +38,54 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--threshold=-1"])).toThrow();
   });
 
+  it("reads --cert-numbers=CSV (uppercased, deduped, trimmed)", () => {
+    expect(parseArgs(["--cert-numbers=SLH,KFS,LJY"])).toEqual({
+      commit: false,
+      threshold: 20,
+      certNumbers: ["SLH", "KFS", "LJY"],
+    });
+    expect(parseArgs(["--cert-numbers=slh, kfs ,LJY"])).toEqual({
+      commit: false,
+      threshold: 20,
+      certNumbers: ["SLH", "KFS", "LJY"],
+    });
+    expect(parseArgs(["--cert-numbers=SLH,SLH,KFS"])).toEqual({
+      commit: false,
+      threshold: 20,
+      certNumbers: ["SLH", "KFS"],
+    });
+  });
+
+  it("rejects empty --cert-numbers values", () => {
+    expect(() => parseArgs(["--cert-numbers="])).toThrow();
+    expect(() => parseArgs(["--cert-numbers=  ,  "])).toThrow();
+  });
+
+  it("combines --cert-numbers with --commit", () => {
+    expect(parseArgs(["--cert-numbers=SLH,KFS", "--commit"])).toEqual({
+      commit: true,
+      threshold: 20,
+      certNumbers: ["SLH", "KFS"],
+    });
+  });
+
   it("ignores unrelated flags", () => {
-    expect(parseArgs(["--verbose", "--foo=bar"])).toEqual({ commit: false, threshold: 20 });
+    expect(parseArgs(["--verbose", "--foo=bar"])).toEqual({
+      commit: false,
+      threshold: 20,
+      certNumbers: [],
+    });
+  });
+});
+
+describe("parseCertNumbersList", () => {
+  it("splits CSV, uppercases, trims, dedupes", () => {
+    expect(parseCertNumbersList("slh, kfs ,LJY,slh")).toEqual(["SLH", "KFS", "LJY"]);
+  });
+
+  it("throws on empty / whitespace-only input", () => {
+    expect(() => parseCertNumbersList("")).toThrow();
+    expect(() => parseCertNumbersList("  ,  ,  ")).toThrow();
   });
 });
 
@@ -138,22 +193,54 @@ describe("buildOperatorPayload", () => {
 });
 
 describe("buildIdentityEvidence", () => {
-  it("includes run_id, threshold, aircraft_count, checkpoint", () => {
-    const row: RealFleetRow = {
-      certificate_number: "LXJ",
-      name: "Flexjet",
-      dba_name: "LXJ",
-      aircraft_count: 148,
-      state: "OH",
-      city: "CLEVELAND",
-      created_at: null,
-    };
-    const e = buildIdentityEvidence(row, "run-uuid-123", 20);
+  const baseRow: RealFleetRow = {
+    certificate_number: "LXJ",
+    name: "Flexjet",
+    dba_name: "LXJ",
+    aircraft_count: 148,
+    state: "OH",
+    city: "CLEVELAND",
+    created_at: null,
+  };
+
+  it("threshold mode: includes run_id, threshold, aircraft_count, checkpoint", () => {
+    const e = buildIdentityEvidence(baseRow, "run-uuid-123", {
+      mode: "threshold",
+      threshold: 20,
+    });
     expect(e).toEqual({
       backfill_run_id: "run-uuid-123",
       checkpoint: "stage-2b-followup",
       threshold: 20,
       aircraft_count: 148,
     });
+  });
+
+  it("cert_list mode (insert_new): no threshold, no merged_into_existing, curated checkpoint", () => {
+    const e = buildIdentityEvidence(baseRow, "run-uuid-456", {
+      mode: "cert_list",
+      mergedIntoExisting: false,
+    });
+    expect(e).toEqual({
+      backfill_run_id: "run-uuid-456",
+      checkpoint: "stage-2b-followup-curated",
+      aircraft_count: 148,
+    });
+    expect(e).not.toHaveProperty("threshold");
+    expect(e).not.toHaveProperty("merged_into_existing");
+  });
+
+  it("cert_list mode (merge_existing): adds merged_into_existing=true", () => {
+    const e = buildIdentityEvidence(baseRow, "run-uuid-789", {
+      mode: "cert_list",
+      mergedIntoExisting: true,
+    });
+    expect(e).toEqual({
+      backfill_run_id: "run-uuid-789",
+      checkpoint: "stage-2b-followup-curated",
+      aircraft_count: 148,
+      merged_into_existing: true,
+    });
+    expect(e).not.toHaveProperty("threshold");
   });
 });

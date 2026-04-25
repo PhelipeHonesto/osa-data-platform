@@ -15,15 +15,28 @@
  * instead of cert-shape, and adds dba_name as an alias where the dba is
  * a real DBA (not an ICAO callsign).
  *
- * FILTER:
- *   - fo.aircraft_count >= --threshold (default 20)
+ * MODES:
+ *   --threshold=N (default)  Bulk path. All faa_operators rows with
+ *                            aircraft_count >= N. Existing behavior.
+ *   --cert-numbers=A,B,C     Curated path (added 2026-04-25). Explicit
+ *                            cert list, bypasses aircraft_count threshold.
+ *                            Detects canonical-name dups against existing
+ *                            public.operators rows; for matches, appends a
+ *                            faa:<cert> identity to the existing operator
+ *                            (preserves prior synthetic seeds for audit)
+ *                            instead of creating a duplicate canonical row.
+ *
+ * FILTER (both modes):
  *   - TRIM(UPPER(certificate_number)) != TRIM(UPPER(name))
  *       drops co-holder duplicate rows where faa-operators-full.ts wrote
  *       the legal entity name into both fields (FLEXJET LLC, NETJETS
  *       SALES INC, WHEELS UP PARTNERS LLC, FEDERAL EXPRESS CORPORATION).
  *   - NOT EXISTS (operator_identities WHERE source='faa' AND source_id =
- *     certificate_number) — skips rows already merged by the sibling
- *     script.
+ *     certificate_number) — skips rows already merged by either path.
+ *
+ * MODE-SPECIFIC FILTER:
+ *   - threshold mode: fo.aircraft_count >= threshold
+ *   - cert-list mode: fo.certificate_number = ANY($cert_numbers)
  *
  * WRITES (all in public schema — operators still lives in public; future
  * ALTER TABLE ... SET SCHEMA to canonical is a one-line migration per
@@ -64,6 +77,7 @@
  *   DATABASE_TYPE=postgres npm run operators:backfill-faa-realfleet
  *   DATABASE_TYPE=postgres npm run operators:backfill-faa-realfleet -- --threshold=10
  *   DATABASE_TYPE=postgres npm run operators:backfill-faa-realfleet -- --commit
+ *   DATABASE_TYPE=postgres npm run operators:backfill-faa-realfleet -- --cert-numbers=SLH,KFS,LJY --commit
  */
 
 import { readFileSync } from "node:fs";
@@ -95,6 +109,7 @@ export interface RealFleetRow {
 export interface RealFleetArgs {
   commit: boolean;
   threshold: number;
+  certNumbers: string[]; // empty = threshold mode; non-empty = curated cert-list mode
 }
 
 export interface OperatorInsertPayload {
@@ -111,10 +126,35 @@ export type AliasAction =
   | { kind: "skip_icao_callsign"; callsign: string }
   | { kind: "insert"; alias: string; aliasNormalized: string };
 
+export type RowAction =
+  | { kind: "insert_new"; row: RealFleetRow }
+  | {
+      kind: "merge_existing";
+      row: RealFleetRow;
+      existingOperatorId: string;
+      existingCanonicalName: string;
+    };
+
+export type IdentityCtx =
+  | { mode: "threshold"; threshold: number }
+  | { mode: "cert_list"; mergedIntoExisting: boolean };
+
 // ── Pure helpers (testable) ──────────────────────────────────────────────
+
+export function parseCertNumbersList(value: string): string[] {
+  const raw = value
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter((s) => s.length > 0);
+  if (raw.length === 0) {
+    throw new Error("--cert-numbers= requires at least one comma-separated value");
+  }
+  return Array.from(new Set(raw));
+}
 
 export function parseArgs(argv: string[]): RealFleetArgs {
   let threshold = DEFAULT_THRESHOLD;
+  let certNumbers: string[] = [];
   for (const arg of argv) {
     if (arg.startsWith("--threshold=")) {
       const n = Number(arg.slice("--threshold=".length));
@@ -122,9 +162,11 @@ export function parseArgs(argv: string[]): RealFleetArgs {
         throw new Error(`invalid --threshold value: ${arg}`);
       }
       threshold = Math.floor(n);
+    } else if (arg.startsWith("--cert-numbers=")) {
+      certNumbers = parseCertNumbersList(arg.slice("--cert-numbers=".length));
     }
   }
-  return { commit: argv.includes("--commit"), threshold };
+  return { commit: argv.includes("--commit"), threshold, certNumbers };
 }
 
 export function isIcaoCallsign(s: string): boolean {
@@ -167,22 +209,49 @@ export function buildOperatorPayload(row: RealFleetRow): OperatorInsertPayload {
 export function buildIdentityEvidence(
   row: RealFleetRow,
   runId: string,
-  threshold: number,
+  ctx: IdentityCtx,
 ): Record<string, unknown> {
-  return {
+  const base = {
     backfill_run_id: runId,
-    checkpoint: "stage-2b-followup",
-    threshold,
     aircraft_count: row.aircraft_count,
   };
+  if (ctx.mode === "threshold") {
+    return { ...base, checkpoint: "stage-2b-followup", threshold: ctx.threshold };
+  }
+  // cert_list mode — only attach merged_into_existing when true so the
+  // evidence stays compact for the common (insert_new) case.
+  return ctx.mergedIntoExisting
+    ? { ...base, checkpoint: "stage-2b-followup-curated", merged_into_existing: true }
+    : { ...base, checkpoint: "stage-2b-followup-curated" };
 }
 
 // ── DB I/O ───────────────────────────────────────────────────────────────
 
 async function loadRealFleetCandidates(
   client: pg.PoolClient,
-  threshold: number,
+  args: RealFleetArgs,
 ): Promise<RealFleetRow[]> {
+  if (args.certNumbers.length > 0) {
+    const res = await client.query<RealFleetRow>(
+      `SELECT fo.certificate_number,
+              fo.name,
+              fo.dba_name,
+              fo.aircraft_count,
+              fo.state,
+              fo.city,
+              fo.created_at
+       FROM public.faa_operators fo
+       WHERE fo.certificate_number = ANY($1::TEXT[])
+         AND TRIM(UPPER(fo.certificate_number)) != TRIM(UPPER(fo.name))
+         AND NOT EXISTS (
+           SELECT 1 FROM public.operator_identities oi
+           WHERE oi.source = 'faa' AND oi.source_id = fo.certificate_number
+         )
+       ORDER BY fo.aircraft_count DESC NULLS LAST, fo.certificate_number`,
+      [args.certNumbers],
+    );
+    return res.rows.map((r) => ({ ...r, aircraft_count: Number(r.aircraft_count) }));
+  }
   const res = await client.query<RealFleetRow>(
     `SELECT fo.certificate_number,
             fo.name,
@@ -199,49 +268,112 @@ async function loadRealFleetCandidates(
          WHERE oi.source = 'faa' AND oi.source_id = fo.certificate_number
        )
      ORDER BY fo.aircraft_count DESC, fo.certificate_number`,
-    [threshold],
+    [args.threshold],
   );
   return res.rows.map((r) => ({ ...r, aircraft_count: Number(r.aircraft_count) }));
 }
 
+async function lookupExistingOperatorByName(
+  client: pg.PoolClient,
+  name: string,
+): Promise<{ id: string; canonical_name: string } | null> {
+  const res = await client.query<{ id: string; canonical_name: string }>(
+    `SELECT id, canonical_name
+       FROM public.operators
+      WHERE TRIM(UPPER(canonical_name)) = TRIM(UPPER($1))
+      LIMIT 1`,
+    [name],
+  );
+  return res.rows[0] ?? null;
+}
+
+async function planActions(
+  client: pg.PoolClient,
+  rows: RealFleetRow[],
+  certListMode: boolean,
+): Promise<RowAction[]> {
+  const actions: RowAction[] = [];
+  for (const row of rows) {
+    if (!certListMode) {
+      // threshold mode preserves existing behavior — no dup detection
+      actions.push({ kind: "insert_new", row });
+      continue;
+    }
+    const existing = await lookupExistingOperatorByName(client, row.name);
+    if (existing) {
+      actions.push({
+        kind: "merge_existing",
+        row,
+        existingOperatorId: existing.id,
+        existingCanonicalName: existing.canonical_name,
+      });
+    } else {
+      actions.push({ kind: "insert_new", row });
+    }
+  }
+  return actions;
+}
+
 interface WriteCounts {
   operators: number;
-  identities: number;
+  identitiesNew: number;
+  identitiesMerged: number;
   aliases: number;
   skippedIcao: number;
   skippedNull: number;
   skippedSame: number;
 }
 
-async function writeOneRow(
+async function writeOneAction(
   client: pg.PoolClient,
-  row: RealFleetRow,
+  action: RowAction,
   runId: string,
-  threshold: number,
+  ctxBase: IdentityCtx,
   counts: WriteCounts,
 ): Promise<void> {
-  const payload = buildOperatorPayload(row);
+  const row = action.row;
+  let operatorId: string;
+  let evidenceCtx: IdentityCtx;
+  let aliasInsertEnabled: boolean;
 
-  const opsRes = await client.query<{ id: string }>(
-    `INSERT INTO public.operators
-       (canonical_name, type_tags, operator_type, data_confidence_score, first_seen_at)
-     VALUES ($1, $2::TEXT[], $3, $4, $5)
-     RETURNING id`,
-    [
-      payload.canonicalName,
-      payload.typeTags,
-      payload.operatorType,
-      payload.dataConfidenceScore,
-      payload.firstSeenAt,
-    ],
-  );
-  const operatorId = opsRes.rows[0]?.id;
-  if (!operatorId) {
-    throw new Error(`operators INSERT returned no id for ${row.certificate_number}`);
+  if (action.kind === "merge_existing") {
+    operatorId = action.existingOperatorId;
+    // cert_list mode is the only path that produces merge actions
+    evidenceCtx = { mode: "cert_list", mergedIntoExisting: true };
+    // Don't write an alias for a merged-into-existing operator: the
+    // existing canonical row may already carry aliases, and this row's
+    // dba is almost always the ICAO callsign anyway. Leave alias state
+    // to a dedicated audit pass.
+    aliasInsertEnabled = false;
+  } else {
+    const payload = buildOperatorPayload(row);
+    const opsRes = await client.query<{ id: string }>(
+      `INSERT INTO public.operators
+         (canonical_name, type_tags, operator_type, data_confidence_score, first_seen_at)
+       VALUES ($1, $2::TEXT[], $3, $4, $5)
+       RETURNING id`,
+      [
+        payload.canonicalName,
+        payload.typeTags,
+        payload.operatorType,
+        payload.dataConfidenceScore,
+        payload.firstSeenAt,
+      ],
+    );
+    const newId = opsRes.rows[0]?.id;
+    if (!newId) {
+      throw new Error(`operators INSERT returned no id for ${row.certificate_number}`);
+    }
+    operatorId = newId;
+    counts.operators += 1;
+    evidenceCtx =
+      ctxBase.mode === "cert_list"
+        ? { mode: "cert_list", mergedIntoExisting: false }
+        : { mode: "threshold", threshold: ctxBase.threshold };
+    aliasInsertEnabled = true;
   }
-  counts.operators += 1;
 
-  const evidence = buildIdentityEvidence(row, runId, threshold);
+  const evidence = buildIdentityEvidence(row, runId, evidenceCtx);
   const idRes = await client.query(
     `INSERT INTO public.operator_identities
        (operator_id, source, source_id, name_as_provided,
@@ -249,7 +381,11 @@ async function writeOneRow(
      VALUES ($1, 'faa', $2, $3, 'exact', 'faa_operators_realfleet_merge', $4::jsonb)`,
     [operatorId, row.certificate_number, row.name, JSON.stringify(evidence)],
   );
-  counts.identities += idRes.rowCount ?? 0;
+  if (action.kind === "merge_existing") {
+    counts.identitiesMerged += idRes.rowCount ?? 0;
+  } else {
+    counts.identitiesNew += idRes.rowCount ?? 0;
+  }
 
   const aliasDecision = decideAliasAction(row.dba_name, row.name);
   switch (aliasDecision.kind) {
@@ -266,6 +402,7 @@ async function writeOneRow(
       );
       break;
     case "insert": {
+      if (!aliasInsertEnabled) break;
       const aliasRes = await client.query(
         `INSERT INTO public.operator_aliases
            (operator_id, alias, alias_normalized, alias_type, source)
@@ -309,16 +446,26 @@ async function main(): Promise<void> {
   initSentry();
   installProcessHandlers("faa-realfleet-backfill");
 
-  const { commit, threshold } = parseArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2));
+  const { commit, threshold, certNumbers } = args;
+  const certListMode = certNumbers.length > 0;
   const runId = randomUUID();
   const t0 = Date.now();
 
-  console.log(`[faa-realfleet] threshold=${threshold}  commit=${commit}  run_id=${runId}`);
+  if (certListMode) {
+    console.log(
+      `[faa-realfleet] mode=cert_list  certs=[${certNumbers.join(",")}]  commit=${commit}  run_id=${runId}`,
+    );
+  } else {
+    console.log(
+      `[faa-realfleet] mode=threshold  threshold=${threshold}  commit=${commit}  run_id=${runId}`,
+    );
+  }
 
   const pool = getPool();
   const client = await pool.connect();
   try {
-    const rows = await loadRealFleetCandidates(client, threshold);
+    const rows = await loadRealFleetCandidates(client, args);
     console.log(`[faa-realfleet] Candidate rows: ${rows.length}`);
     if (rows.length === 0) {
       console.log(`[faa-realfleet] Nothing to write. Exiting.`);
@@ -327,23 +474,54 @@ async function main(): Promise<void> {
       return;
     }
 
-    console.log(`[faa-realfleet] Rows to be written:`);
-    rows.forEach((r, i) => {
-      console.log(
-        `  ${i + 1}. cert=${r.certificate_number}  aircraft=${r.aircraft_count}  name='${r.name}'  dba=${r.dba_name ?? "NULL"}  state=${r.state ?? "NULL"}`,
-      );
+    if (certListMode) {
+      const requested = new Set(certNumbers);
+      const found = new Set(rows.map((r) => r.certificate_number));
+      const missing = [...requested].filter((c) => !found.has(c));
+      if (missing.length > 0) {
+        console.log(
+          `[faa-realfleet] WARNING: ${missing.length} requested cert(s) not loaded (already merged, or filtered by cert!=name): ${missing.join(",")}`,
+        );
+      }
+    }
+
+    const actions = await planActions(client, rows, certListMode);
+    const planSummary = { insert_new: 0, merge_existing: 0 };
+    console.log(`[faa-realfleet] Action plan:`);
+    actions.forEach((a, i) => {
+      const r = a.row;
+      if (a.kind === "merge_existing") {
+        planSummary.merge_existing += 1;
+        console.log(
+          `  ${i + 1}. MERGE  cert=${r.certificate_number}  aircraft=${r.aircraft_count}  name='${r.name}' → existing operator ${a.existingOperatorId} (canonical='${a.existingCanonicalName}')`,
+        );
+      } else {
+        planSummary.insert_new += 1;
+        console.log(
+          `  ${i + 1}. NEW    cert=${r.certificate_number}  aircraft=${r.aircraft_count}  name='${r.name}'  dba=${r.dba_name ?? "NULL"}  state=${r.state ?? "NULL"}`,
+        );
+      }
     });
+    console.log(
+      `[faa-realfleet] Plan summary: ${planSummary.insert_new} new operator(s), ${planSummary.merge_existing} identity merge(s) into existing canonical row(s)`,
+    );
 
     const aliasPreview = { insert: 0, skip_icao: 0, skip_null: 0, skip_same: 0 };
-    for (const r of rows) {
-      const d = decideAliasAction(r.dba_name, r.name);
+    for (const a of actions) {
+      // alias inserts only happen on insert_new path; for merge_existing
+      // we hold off (see writeOneAction comment)
+      if (a.kind === "merge_existing") {
+        aliasPreview.skip_icao += 1; // count under skip_icao for visibility
+        continue;
+      }
+      const d = decideAliasAction(a.row.dba_name, a.row.name);
       if (d.kind === "insert") aliasPreview.insert += 1;
       else if (d.kind === "skip_icao_callsign") aliasPreview.skip_icao += 1;
       else if (d.kind === "skip_null") aliasPreview.skip_null += 1;
       else aliasPreview.skip_same += 1;
     }
     console.log(
-      `[faa-realfleet] Alias plan: ${aliasPreview.insert} insert, ${aliasPreview.skip_icao} skip ICAO, ${aliasPreview.skip_null} skip null, ${aliasPreview.skip_same} skip dba==name`,
+      `[faa-realfleet] Alias plan: ${aliasPreview.insert} insert, ${aliasPreview.skip_icao} skip ICAO/merge, ${aliasPreview.skip_null} skip null, ${aliasPreview.skip_same} skip dba==name`,
     );
 
     if (!commit) {
@@ -355,18 +533,23 @@ async function main(): Promise<void> {
 
     const counts: WriteCounts = {
       operators: 0,
-      identities: 0,
+      identitiesNew: 0,
+      identitiesMerged: 0,
       aliases: 0,
       skippedIcao: 0,
       skippedNull: 0,
       skippedSame: 0,
     };
 
+    const ctxBase: IdentityCtx = certListMode
+      ? { mode: "cert_list", mergedIntoExisting: false }
+      : { mode: "threshold", threshold };
+
     console.log(`[faa-realfleet] Writing in a single transaction...`);
     await client.query("BEGIN");
     try {
-      for (const row of rows) {
-        await writeOneRow(client, row, runId, threshold, counts);
+      for (const action of actions) {
+        await writeOneAction(client, action, runId, ctxBase, counts);
       }
       await client.query("COMMIT");
     } catch (err) {
@@ -375,11 +558,18 @@ async function main(): Promise<void> {
     }
 
     const dtSec = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`[faa-realfleet] Inserted ${counts.operators} operators, ${counts.identities} identities, ${counts.aliases} aliases`);
-    console.log(`[faa-realfleet] Skipped aliases: ${counts.skippedIcao} ICAO, ${counts.skippedNull} null, ${counts.skippedSame} dba==name`);
-    console.log(`[faa-realfleet] backfill_run_id=${runId}`);
     console.log(
-      `[faa-realfleet] Rollback: psql "$SUPABASE_DATABASE_URL" -v run_id='${runId}' -f schema/rollback/2026-04-24-operators-realfleet-rollback.sql`,
+      `[faa-realfleet] Inserted ${counts.operators} new operators, ${counts.identitiesNew} new identities, ${counts.identitiesMerged} merged identities, ${counts.aliases} aliases`,
+    );
+    console.log(
+      `[faa-realfleet] Skipped aliases: ${counts.skippedIcao} ICAO/merge, ${counts.skippedNull} null, ${counts.skippedSame} dba==name`,
+    );
+    console.log(`[faa-realfleet] backfill_run_id=${runId}`);
+    const rollbackFile = certListMode
+      ? "schema/rollback/2026-04-25-operators-curated-rollback.sql"
+      : "schema/rollback/2026-04-24-operators-realfleet-rollback.sql";
+    console.log(
+      `[faa-realfleet] Rollback: psql "$SUPABASE_DATABASE_URL" -v run_id='${runId}' -f ${rollbackFile}`,
     );
     console.log(`[faa-realfleet] Done. ${dtSec}s`);
   } finally {
