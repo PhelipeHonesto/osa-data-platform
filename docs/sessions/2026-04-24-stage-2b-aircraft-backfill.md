@@ -175,3 +175,44 @@ Followups outstanding (all in `docs/phase1-followups.md`):
 - pino logger event-loop fix for dry-run scripts (cosmetic)
 - npm run db:test helper for migration sessions (quality-of-life)
 - Pre-existing followups from morning: alias-table audit, manufacturer-NULL slip, target_companies pathway, and the deeper faa-operators-full ingestion rewrite that would solve the noise problem at source.
+
+---
+
+## Appendix — realfleet merge ICAO callsigns (preserves data until icao_callsign column ships)
+
+The Stage-2b-followup realfleet merge (commit `f211b5a`) skipped 26 alias inserts because every `dba_name` in the candidate set was a 3-letter ICAO airline designator, not a "doing business as" name. Those callsigns are recorded here in raw form so they survive until the `icao_callsign TEXT` column on `public.operators` ships (followup tracked in `docs/phase1-followups.md` §"Add icao_callsign column to public.operators").
+
+Format: `(certificate_number, canonical_name, icao_callsign)`. The cert and the callsign are the same value in this dataset — `dba_name` and `certificate_number` both carry the ICAO designator for these operators. The canonical_name is the human-readable carrier name.
+
+```
+(EJA, NetJets Aviation,           EJA)
+(EJM, Executive Jet Management,   EJM)
+(LXJ, Flexjet,                    LXJ)
+(TWY, Textron Aviation,           TWY)
+(GLF, Gulfstream Aerospace,       GLF)
+(DCM, Directional Aviation Capital, DCM)
+(JTL, JetSuite / JSX,             JTL)
+(PCH, PlaneSense,                 PCH)
+(WUP, Wheels Up,                  WUP)
+(JRE, JetRight,                   JRE)
+(FFL, FlyExclusive,               FFL)
+(VJA, VistaJet,                   VJA)
+(BBA, Biggin Hill Executive Aviation, BBA)
+(EMB, Embraer Executive Jets,     EMB)
+(CDR, Comlux Aviation,            CDR)
+(CYC, Tradewind Aviation,         CYC)
+(XSR, XO (formerly JetSmarter),   XSR)
+(CNS, Contour Aviation,           CNS)
+(TMB, Thrive Aviation,            TMB)
+(FDY, Sun Country Airlines,       FDY)
+(HON, Honeywell Flight Operations, HON)
+(JAS, JetAviation,                JAS)
+(BTQ, Boutique Air,               BTQ)
+(CPT, Corporate Air,              CPT)
+(FTH, Freestream Aircraft,        FTH)
+(LAK, Lakeland Aero,              LAK)
+```
+
+Backfill source: `public.faa_operators` rows where `aircraft_count >= 20 AND TRIM(UPPER(certificate_number)) != TRIM(UPPER(name))`, queried 2026-04-24. The certificate_number column in faa_operators carries the ICAO callsign for these specific entries (a quirk of the FAA-operators-full ingestor's ICAO_OPERATOR_MAP, see `docs/phase1-followups.md` §"faa-operators-full.ts ingests aircraft owners as operators").
+
+When the `icao_callsign` column lands on `public.operators`, this appendix can be replayed as a SQL backfill keyed by the canonical_name match.

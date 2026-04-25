@@ -24,15 +24,23 @@
  *
  * Usage:
  *   tsx scripts/backfill-operator-aircraft-link.ts                   # dry-run (default)
- *   tsx scripts/backfill-operator-aircraft-link.ts --write           # full run
+ *   tsx scripts/backfill-operator-aircraft-link.ts --write           # full run, new aircraft only
  *   tsx scripts/backfill-operator-aircraft-link.ts --write --max-batches=10  # smoke / timing
  *   tsx scripts/backfill-operator-aircraft-link.ts --write --batch-size=5000
+ *   tsx scripts/backfill-operator-aircraft-link.ts --write --re-resolve-no-match
+ *     # Also re-process aircraft whose only prior resolution_log row(s) were
+ *     # 'no_match'. Used to measure the lift after canonical.operators expands
+ *     # (e.g., the 2026-04-24 realfleet merge added 26 operators — previously
+ *     # no_match aircraft may now resolve). Re-resolve writes a NEW
+ *     # resolution_log row with run_id prefixed 'rerun_'; the prior no_match
+ *     # row stays for audit history.
  *
  * Rollback: schema/rollback/2026-04-24-checkpoint-3-rollback.sql
  */
 
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import pg from "pg";
 import { preFilter, type PreFilterBucket } from "../src/entity-resolution/pre-filters.js";
 import {
@@ -56,27 +64,52 @@ type ResolverAction =
   | "matched_blocked_operator_type"
   | PreFilterBucket;
 
-interface Args {
+export type Mode = "new_only" | "re_resolve_no_match";
+
+export interface Args {
   write: boolean;
   batchSize: number;
   maxBatches: number | null;
+  mode: Mode;
 }
 
-function parseArgs(): Args {
-  const args = process.argv.slice(2);
-  const batchFlag = args.find((a) => a.startsWith("--batch-size="));
-  const maxFlag = args.find((a) => a.startsWith("--max-batches="));
+export function parseArgs(argv: string[]): Args {
+  const batchFlag = argv.find((a) => a.startsWith("--batch-size="));
+  const maxFlag = argv.find((a) => a.startsWith("--max-batches="));
   return {
-    write: args.includes("--write"),
+    write: argv.includes("--write"),
     batchSize: batchFlag ? Number.parseInt(batchFlag.split("=")[1]!, 10) : DEFAULT_BATCH_SIZE,
     maxBatches: maxFlag ? Number.parseInt(maxFlag.split("=")[1]!, 10) : null,
+    mode: argv.includes("--re-resolve-no-match") ? "re_resolve_no_match" : "new_only",
   };
 }
 
-function formatRunId(): string {
-  const d = new Date();
+export function formatRunId(mode: Mode = "new_only", now: Date = new Date()): string {
   const pad = (n: number) => n.toString().padStart(2, "0");
-  return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
+  const ts = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}T${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}Z`;
+  return mode === "re_resolve_no_match" ? `rerun_${ts}` : ts;
+}
+
+/**
+ * SQL fragment that excludes aircraft whose resolution_log entry should
+ * stop them from being processed.
+ *
+ *   new_only             — exclude any aircraft with ANY resolution_log row.
+ *   re_resolve_no_match  — exclude only aircraft with a non-no_match row.
+ *                          Aircraft that have only no_match rows (or no
+ *                          rows at all) are eligible.
+ *
+ * Returned fragment is the body of a NOT EXISTS subquery; callers wrap it
+ * with `AND NOT EXISTS (...)`.
+ */
+export function exclusionSubquery(mode: Mode): string {
+  const baseExclusion = `SELECT 1 FROM canonical.operator_aircraft_resolution_log r
+           WHERE r.aircraft_id = ai.aircraft_id`;
+  if (mode === "re_resolve_no_match") {
+    return `${baseExclusion}
+             AND r.resolver_action != 'no_match'`;
+  }
+  return baseExclusion;
 }
 
 interface RowToProcess {
@@ -88,21 +121,29 @@ interface RowToProcess {
   faa_created_at: Date;
 }
 
-async function countRemaining(client: pg.PoolClient): Promise<number> {
+async function countRemaining(client: pg.PoolClient, mode: Mode): Promise<number> {
   const r = await client.query<{ n: string }>(
     `SELECT COUNT(*)::bigint AS n
        FROM canonical.aircraft_identities ai
        JOIN faa_aircraft fa ON fa.tail_number = ai.source_id
       WHERE ai.source = 'faa'
-        AND NOT EXISTS (
-          SELECT 1 FROM canonical.operator_aircraft_resolution_log r
-           WHERE r.aircraft_id = ai.aircraft_id
-        )`,
+        AND NOT EXISTS (${exclusionSubquery(mode)})`,
   );
   return Number.parseInt(r.rows[0]!.n, 10);
 }
 
-async function fetchBatch(client: pg.PoolClient, batchSize: number): Promise<RowToProcess[]> {
+async function countCandidatePool(client: pg.PoolClient): Promise<number> {
+  const r = await client.query<{ n: string }>(
+    `SELECT COUNT(*)::bigint AS n FROM operators`,
+  );
+  return Number.parseInt(r.rows[0]!.n, 10);
+}
+
+async function fetchBatch(
+  client: pg.PoolClient,
+  batchSize: number,
+  mode: Mode,
+): Promise<RowToProcess[]> {
   const res = await client.query<RowToProcess>(
     `SELECT
        ai.aircraft_id,
@@ -114,10 +155,7 @@ async function fetchBatch(client: pg.PoolClient, batchSize: number): Promise<Row
        FROM canonical.aircraft_identities ai
        JOIN faa_aircraft fa ON fa.tail_number = ai.source_id
       WHERE ai.source = 'faa'
-        AND NOT EXISTS (
-          SELECT 1 FROM canonical.operator_aircraft_resolution_log r
-           WHERE r.aircraft_id = ai.aircraft_id
-        )
+        AND NOT EXISTS (${exclusionSubquery(mode)})
       ORDER BY ai.aircraft_id
       LIMIT $1`,
     [batchSize],
@@ -403,8 +441,8 @@ function logBatchStats(batchNum: number, elapsedMs: number, stats: BatchStats): 
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs();
-  const runId = formatRunId();
+  const args = parseArgs(process.argv.slice(2));
+  const runId = formatRunId(args.mode);
   const connectionString = process.env["SUPABASE_DATABASE_URL"];
   if (!connectionString) {
     console.error("SUPABASE_DATABASE_URL not set.");
@@ -413,14 +451,18 @@ async function main(): Promise<void> {
   const pool = new pg.Pool({ connectionString, ssl: { rejectUnauthorized: false }, max: 5 });
 
   console.log(`[cp3] run_id=${runId}`);
-  console.log(`[cp3] mode=${args.write ? "WRITE" : "DRY-RUN"}`);
+  console.log(`[cp3] write_mode=${args.write ? "WRITE" : "DRY-RUN"}`);
+  console.log(`[cp3] resolve_mode=${args.mode}`);
   console.log(`[cp3] batch_size=${args.batchSize}${args.maxBatches !== null ? ` max_batches=${args.maxBatches}` : ""}`);
 
   const client = await pool.connect();
   try {
     await client.query(`SET statement_timeout = '600s'`);
 
-    const startRemaining = await countRemaining(client);
+    const candidatePool = await countCandidatePool(client);
+    console.log(`[cp3] candidate operator pool: ${candidatePool.toLocaleString()} (public.operators)`);
+
+    const startRemaining = await countRemaining(client, args.mode);
     console.log(`[cp3] rows remaining: ${startRemaining.toLocaleString()}`);
     if (startRemaining === 0) {
       console.log(`[cp3] nothing to do.`);
@@ -435,7 +477,7 @@ async function main(): Promise<void> {
       batchNum++;
       await client.query("BEGIN");
       try {
-        const rows = await fetchBatch(client, args.batchSize);
+        const rows = await fetchBatch(client, args.batchSize, args.mode);
         if (rows.length === 0) {
           await client.query("ROLLBACK");
           break;
@@ -487,7 +529,7 @@ async function main(): Promise<void> {
     console.log(`[cp3] writes: links=${cumulative.linksWritten} reviews=${cumulative.reviewsWritten}`);
 
     if (args.maxBatches !== null && args.write) {
-      const rowsLeft = await countRemaining(client);
+      const rowsLeft = await countRemaining(client, args.mode);
       const completed = cumulative.processed;
       const fractionDone = completed / (completed + rowsLeft);
       const extrapMs = wallMs / Math.max(fractionDone, 0.0001);
@@ -503,7 +545,10 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+const isMain = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
+if (isMain) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
