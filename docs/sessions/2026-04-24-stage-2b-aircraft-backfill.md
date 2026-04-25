@@ -404,3 +404,19 @@ If the scheduled agent's commit 3 lands tonight, today's total is 19 commits. If
 1. **Seven-role model validated** via the FedEx/CFS feeder case (commit `d1408e7`): aircraft registered to a legitimate corporation (FedEx) can be attributed as operated by a different entity (Corporate Flight Services) via callsign squawk, without conflict. `role='legal_owner'` vs `role='operator'` coexist on the temporal link table. Both queryable, both provenance-backed. This is the architectural payoff that justifies the 7-role complexity over a simpler "operator" attribution model.
 
 2. **The curated merge pattern (cert-list bypass of threshold) is now reusable infrastructure.** Next time a probe surfaces a specific operator not in canonical, merging it is one CLI argument: `npm run operators:backfill-faa-realfleet -- --cert-numbers=A,B,C --commit`. No new script, no new rollback, no new migration. Canonical-name dup detection is built in (4 of 12 in this evening's run hit the merge path; existing operators preserved, audit trail clean).
+
+### CP3 re-resolve outcome (morning, 2026-04-25)
+
+Async result landed. The re-resolve run hit a loop-exit bug — batch 1 processed correctly (5003 rows, 3 matches all to Kalitta Charters via the curated merge of cert USC), then batches 2–128 idle-looped with no DB writes for ~12 hours until killed manually at the start of the morning session.
+
+DB state: clean. 5003 resolution_log rows under run_id `rerun_20260425T021140Z` (3 matched + 5000 no_match). 3 new `operator_aircraft_link` rows. Verified `total = distinct = 5003` — no duplicates, no pollution, no cleanup needed.
+
+Commits landed this morning:
+
+- `ee3b18c` fix(backfill): CP3 re-resolve loop exit — runId-scoped exclusion
+- `fa7132b` feat(canonical): CP3 re-resolve delta from operator pool expansion (270 → 304)
+- this commit — docs(session): CP3 re-resolve outcome + bug fix
+
+Honest read: the cert_holder pathway lift from operator coverage expansion is small. Yesterday's 257-row Stage 2c callsign delta was the productive lever; the cert_holder pathway adds roughly an order of magnitude less because trustee-registration is the norm for major charter operators. The 3 matches that DID land are mid-tier (Kalitta Charters, registered directly to the operating LLC, no trustee in between) — exactly the shape of operator that responds to this pathway.
+
+The bug fix means future operator-expansion measurements via re-resolve will run cleanly (loop now exits when the prior-no_match population is exhausted rather than spinning silently on duplicate writes). No re-run scheduled today — the 3 matches are the day's measurement; if a future operator expansion warrants remeasurement, the script is now reliable.
