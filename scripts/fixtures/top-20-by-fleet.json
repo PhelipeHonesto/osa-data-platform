@@ -1,0 +1,28 @@
+{
+  "description": "Track 6 Step 2c.5 Phase 2 — operators flagged as downstream-critical. The --commit pass surfaces any LLM decision affecting one of these for human review (no auto-approve), regardless of confidence. Substring match (case-insensitive) against public.operators.canonical_name AND public.operator_aliases.alias.",
+  "rationale": "These 20 operators concentrate the bulk of US fractional / large-fleet charter activity. An incorrect alias or rebrand merge here propagates to every downstream analytic (route_intel, operator_market_share, fleet_stats). Better to surface a few high-priority decisions for human review than auto-approve a downstream-critical merge based on LLM confidence alone.",
+  "policy": "intentionally over-inclusive — substring matching catches subsidiary LLCs (e.g., 'Wheels Up Partners LLC') under their parent brand string ('Wheels Up'), which is the correct conservative choice for surface-for-review.",
+  "generated_at": "2026-04-25",
+  "operator_substrings": [
+    "NetJets",
+    "Flexjet",
+    "Wheels Up",
+    "Vista America",
+    "VistaJet",
+    "Jet Linx",
+    "Solairus Aviation",
+    "Clay Lacy Aviation",
+    "Executive Jet Management",
+    "Jet Aviation",
+    "PlaneSense",
+    "ExecuJet",
+    "Magellan Jets",
+    "Jet Edge",
+    "JetSelect",
+    "Volato",
+    "FlyExclusive",
+    "TMC Jets",
+    "Priester Aviation",
+    "Star Jet"
+  ]
+}
