@@ -2,7 +2,7 @@
 
 **Status**: v1 — 2026-04-24 (five-entity expansion)
 **Owner**: Phelipe Honesto
-**Scope**: Principles and core shapes for OSA's aviation intelligence graph. Five canonical entities — operators, aircraft, FBOs, airports, people — connected by temporal link tables. This document defines the WHY and WHAT; entity-specific detail lives in `docs/er/*.md` appendices; temporal relationship shape lives in `docs/temporal-link-pattern.md`.
+**Scope**: Principles and core shapes for OSA's aviation intelligence graph. Six canonical entities — operators, certificates, aircraft, FBOs, airports, people — connected by temporal link tables. This document defines the WHY and WHAT; entity-specific detail lives in `docs/er/*.md` appendices; temporal relationship shape lives in `docs/temporal-link-pattern.md`.
 **Related**: `docs/data-architecture.md`, `docs/data-platform-plan.md`, `docs/semantic/operators.yaml`, `docs/phase1-followups.md`, `docs/er/aircraft.md`, `docs/temporal-link-pattern.md`, `docs/data-sources.md`
 
 ---
@@ -36,14 +36,15 @@ Nobody credible owns "who is this operator, really." That's the opening.
 - **OSA does not publish accusations it can't defend.** Multi-source corroboration required for any claim Dumont presents as fact. Single-source rebrand/acquisition claims are never good enough.
 - **OSA does not scrape sources that forbid it.** LinkedIn, gated databases, anything whose ToS prohibits machine access. We work with the open web and official feeds, not against terms of service.
 
-## The five entities
+## The six entities
 
-The graph has exactly five canonical entity types. No sixth entity is added until all five have resolution pipelines in place. This is a discipline decision — expanding the node set before the existing set is fully resolved produces a half-built ontology that nobody can reason about.
+The graph has exactly six canonical entity types, paired by relationship to legal vs commercial reality. No seventh entity is added until all six have resolution pipelines in place. This is a discipline decision — expanding the node set before the existing set is fully resolved produces a half-built ontology that nobody can reason about.
 
 | Entity | Canonical table | Appendix | Identity anchors | Stage |
 |---|---|---|---|---|
 | **Operator** | `public.operators` | `docs/er/operators.md` (TBD — content currently inlined in this doc) | `canonical_name` + `operator_type` + `operator_identities.(source, source_id)` | Stage 1 ✓ |
-| **Aircraft** | `canonical.aircraft` | `docs/er/aircraft.md` | `icao_hex` (preferred, immutable) / `serial_number` (history) / `current_tail_number` (mutable) | Stage 2a (this plan) |
+| **Certificate** | `canonical.certificates` (TBD) | `docs/er/certificate.md` | `faa_cert_number` (canonical) / `dot_number` (secondary) / OpSpec `cert_id` (tertiary) | Stage 6a (next session — Step 0 architectural decision logged 2026-04-25) |
+| **Aircraft** | `canonical.aircraft` | `docs/er/aircraft.md` | `icao_hex` (preferred, immutable) / `serial_number` (history) / `current_tail_number` (mutable) | Stage 2a ✓ / 2b–2c walks shipped 2026-04-24 |
 | **FBO** | `canonical.fbo` (TBD) | `docs/er/fbos.md` (TBD) | `icao_airport + fbo_name` + parent rollup | Stage 3a |
 | **Airport** | `canonical.airport` (TBD) | `docs/er/airports.md` (TBD) | `icao_id` / `iata_id` / `faa_id` | Stage 4a (lightest load — deferred until needed) |
 | **Person** | `canonical.person` (TBD) | `docs/er/people.md` (TBD) | `full_name + role_history`; public records only | Stage 5a |
@@ -88,6 +89,44 @@ Lightest ER load of the five. Identity resolution is mostly deterministic via IC
 Role history for founders, CEOs, chief pilots, directors of operations. Public-records-only — no LinkedIn, permanently excluded. Sources: SEC EDGAR filings, FAA airmen registry, NTSB incident narratives, state SOS officer filings, press release named quotes. Appendix TBD.
 
 **Rule**: Person entities are created only when linked to an Operator, Aircraft, or FBO via a documented role. No people rows without an edge.
+
+### Certificate — Stage 6a (architectural decision, schema deferred to next session)
+
+Shape detail: `docs/er/certificate.md`. Summary below.
+
+#### Why certificate gets promoted to a first-class entity
+
+The five-entity model treated cert state as an attribute of operator. Two weeks of evidence broke that assumption:
+
+1. **Vista America cert consolidation.** A single Vista America Part 135 cert now subsumes Jet Select, XOJET, and Red Wing — three former operator brands, one surviving cert. Modeling cert as a column on operator forces a write-update pattern that erases which brand was attached to the cert at what date. NTSB/FAA queries against historical incidents need the brand-of-record at incident time, which the operator-attribute model cannot answer.
+2. **West Coast Aviation Services cert pair.** One operator group holds two certs (WCW + WCC) simultaneously. An operator-as-cert-holder column forces a one-to-one mapping that the data refuses to obey.
+3. **FedEx / Corporate Flight Services feeder** (validated 2026-04-24, commit `d1408e7`). The same airframe is registered to a legitimate corporate owner (FedEx) and operated under a different operator's ICAO callsign (Corporate Flight Services / CFS). The seven-role aircraft model handles this only because legal_owner and operator are distinct roles. The same logic — same airframe, two parallel legal layers — applies to operator and cert: one entity is the brand the customer pays, the other is the FAA-authorized legal vehicle that flies. Collapsing them is the same mistake we already refused to make at the aircraft layer.
+4. **Stage 2b CP3 structural ceiling.** The `certificate_holder` field in FAA registry attributes 0.05% of resolver-eligible airframes to canonical operators. The blocker is not resolver quality; it is that "who holds the cert" and "who is the operator brand" are different questions, and the data model has been pretending they're the same.
+
+#### What changes
+
+- New canonical entity `canonical.certificates` (Stage 6a, schema next session).
+- New temporal link `canonical.aircraft_on_certificate(aircraft_id, cert_id, valid_from, valid_to, ...)` — fleet authorization on a cert at a given moment, sourced primarily from the FAA Part 135 Operators and Aircraft list (the publicly published OpSpec D085 spreadsheet) and operator self-disclosure.
+- New temporal link `canonical.operator_holds_certificate(operator_id, cert_id, valid_from, valid_to, ...)` — which operator brand is the holder-of-record on a cert at a given moment.
+- New event table `canonical.certificate_events` — issued, transferred, surrendered, revoked, consolidated, fleet_added, fleet_removed.
+
+#### What stays
+
+- `canonical.operator_aircraft_link` continues to carry the seven-role attribution pattern, including `role='operator'` from the ICAO callsign pathway. That table answers "who flies this airframe" — the operational-control fact. `aircraft_on_certificate` answers a different fact: "is this airframe authorized on this cert at this date." Same source data sometimes corroborates both, but they are distinct claims and stay separate.
+- `canonical.operator_events.event_type='cert_transfer'` is **deprecated** in favor of dedicated `certificate_events`. Existing rows (none today; table is empty) would migrate to `certificate_events` if any landed before Step 1 ships. The deprecation note belongs in the operator_events schema header when the certificate schema lands.
+- The bitemporal / event-driven pattern documented in `docs/temporal-link-pattern.md` is reused without modification. Both new link tables follow the canonical column shape; `certificate_events` follows the event-edge variant. No new temporal pattern is introduced.
+
+#### Build sequence — Track 6 (Certificate)
+
+Steps are strict; tracks can advance independently where dependencies allow.
+
+- **Step 1** — `canonical.certificates` schema + `canonical.certificate_identities` + `canonical.certificate_aliases` scaffold. Empty tables. Migration verification per CLAUDE.md §4.
+- **Step 2** — `canonical.aircraft_on_certificate` + `canonical.operator_holds_certificate` temporal link tables. Empty.
+- **Step 3** — Backfill from existing data. FAA Air Carrier Certificate database (public, available today) seeds `canonical.certificates`. Match against `public.operators` to populate the initial `operator_holds_certificate` rows. Match against `canonical.aircraft` (where source data permits) for `aircraft_on_certificate`.
+- **Step 4** — Ingest the FAA Part 135 Operators and Aircraft list (sourced from OpSpec D085, published as a public Excel spreadsheet on faa.gov, monthly cadence when active). Currently the FAA has the page temporarily deactivated pending a data-integrity fix (last update 2026-04-01); archived copies serve as bridge data. Normal pandas/Excel ingestion job — not FOIA-gated. Authoritative for fleet-on-certificate authorization. FOIA D085 is a fallback path when the public list stays offline or historical amendments at a specific date are needed.
+- **Step 5+** — ARGUS / Wyvern attached to certs (not operators), then resume Track 3 (FBO) and Track 5 (Person).
+
+The Stage 2c trustee unmask remains the productive operator-attribution lever for now. Certificate promotion does not invalidate Stage 2c walks — it gives the operator-side claims a separate, auditable spine when cert structure changes underneath them.
 
 ## Edges
 
@@ -158,7 +197,7 @@ Math defined in `src/memory/canonical/trust-score.ts` and `src/memory/canonical/
 
 ## Build sequence
 
-Three parallel tracks for the five entities. Ordering within a track is strict; tracks can advance independently where dependencies allow. This is ordering, not scheduling.
+Tracks for the six entities; ordering within a track is strict, and tracks can advance independently where dependencies allow. This is ordering, not scheduling. Track 6 (Certificate) is detailed in the §"Certificate — Stage 6a" appendix above.
 
 ### Track 1 — Operator (Stages 1–9)
 

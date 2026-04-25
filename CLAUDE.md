@@ -14,9 +14,28 @@ All new entity-resolution tables — aircraft, FBO, airport, person, and every c
 
 `wingx-engine.ts` currently anchors 26 aggregations on the free-text `adsb_completed_legs.operator_name` column. **Do not edit it in place** to point at `canonical.aircraft` / `canonical.operator_aircraft_link`. The migration path is dbt (Phase 12 in `docs/data-platform-plan.md`) — the wingx computations will be re-expressed as dbt marts reading properly-staged silver tables, not patched with partial canonical wiring. Touching it now creates a hybrid that has to be unwound during Phase 12.
 
-### 3. Five-entity discipline
+### 3. Six-entity discipline
 
-Exactly five canonical entities: `operator`, `aircraft`, `fbo`, `airport`, `person`. **No sixth entity is added until all five have resolution pipelines in place.** This is a design-gravity decision — expanding the node set before the existing set resolves produces a half-built ontology nobody can reason about. Current status: operator done, aircraft Stage 2a shipped (tables empty), FBO/airport/person not started. Status lives in `docs/er-architecture-plan.md` §"Build sequence."
+The data platform models six first-class entities, paired by relationship to legal vs commercial reality:
+
+- **Operator** — commercial entity (the brand: NetJets, VistaJet, Vista America)
+- **Certificate** — legal entity (the FAA cert: DCUA716B, GSPA467E)
+- **Aircraft** — the physical asset
+- **FBO** — ground service location
+- **Airport** — geography
+- **Person** — individual (pilot, owner, exec, broker)
+
+Operator and Certificate are paired but distinct. One operator group may hold multiple certs (West Coast Aviation Services holds WCW + WCC). One cert may persist across operator brand changes (Vista America consolidating Jet Select + XOJET + Red Wing under a single cert). The link is temporal: `operator_holds_certificate(operator_id, cert_id, valid_from, valid_to, source, evidence)`.
+
+Discipline rules:
+
+- No new entity beyond these six until each has a resolution pipeline in place
+- Every link is temporally bounded: `valid_from` / `valid_to` / `source` / `evidence`
+- Every change to a link writes to an events log first; the link table is derived state
+- Every claim has provenance: `source` + `timestamp` + `evidence URL` + `confidence`
+- Trust scores surface, never filter
+
+Current status: operator done; aircraft Stage 2a schema + Stage 2b backfill + Stage 2c callsign walk shipped (2026-04-24); certificate not started (architectural decision logged 2026-04-25, schema next session); FBO / airport / person not started. Status lives in `docs/er-architecture-plan.md` §"Build sequence." Certificate spec lives in `docs/er/certificate.md`.
 
 ### 4. Migration verification rule
 
