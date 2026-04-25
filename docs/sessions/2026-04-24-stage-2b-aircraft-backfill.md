@@ -395,7 +395,7 @@ Late afternoon + evening:
 
 Curated mid-tier merge shipped: commits `bf7abf2` + `d1408e7` on origin/main. 304 operators total, 38 with `icao_callsign`, 267 `operator_aircraft_link` rows (231 + 26 from this evening's Stage 2c re-run).
 
-CP3 re-resolve running in background (pid 278, started ~21:11 local / 02:11Z 2026-04-25, run_id `rerun_20260425T021140Z`). Log at `/tmp/cp3-rerun-20260425.log`. ETA ~2.5h. A scheduled agent will capture the delta when it finishes, draft commit 3, and wait for approval to push.
+CP3 re-resolve running in background (pid 278, started ~21:11 local / 02:11Z 2026-04-25, run_id `rerun_20260425T021140Z`). Log at `/tmp/cp3-rerun-20260425.log`. ETA ~2.5h. Next local session (tomorrow morning or whenever Phelipe is back at the laptop) picks up the result: tail `/tmp/cp3-rerun-20260425.log` for the "Done" line, run the delta query against `canonical.operator_aircraft_resolution_log` filtered by `backfill_run_id LIKE 'rerun_%'`, draft and review commit 3, push. Scheduled-agent option was considered and rejected — three infra blockers (GitHub not connected for remote agent, local-only log path, local-only `.env`) outweighed the small task size.
 
 If the scheduled agent's commit 3 lands tonight, today's total is 19 commits. If it fires successfully tomorrow morning, the delta measurement still reflects today's work since no new writes happened between CP3 start and its completion.
 
