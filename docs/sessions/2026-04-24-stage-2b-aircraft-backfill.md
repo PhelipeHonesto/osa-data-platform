@@ -294,3 +294,13 @@ The `icao_callsign` column on operators (shipped earlier today) is NOT wasted wo
 Performance note: probes against `operator_name` require sequential scan (no trigram index — see existing phase1-followups). 30-second probe time on 21M rows. Future Stage 2c queries should not take this shape — they should hit a `callsign` column index, not regex against the propagated `operator_name`.
 
 Followup captured in `docs/phase1-followups.md` §"ADS-B ingest: persist Mode S flight_id (callsign) per leg" as HIGH priority. Architecture impact captured in `docs/er-architecture-plan.md` §"Pathway 2: ICAO callsign unmask — blocked, needs ingest change" under the structural-ceiling section.
+
+### Correction: callsign pathway is NOT blocked (same-day correction)
+
+Schema inspection after the original "blocked" framing surfaced that `adsb_positions.callsign` IS populated — the field exists at the position-record level, just not on `adsb_completed_legs` (the aggregator drops it). The earlier probe targeted `operator_name` on `adsb_completed_legs`, which is indeed propagated `certificate_holder`. But `adsb_positions` has the actual squawked callsign data, populated 96.4% of records.
+
+Stage 2c was shipped same-session against `adsb_positions` directly (commit `d48014d` — `feat(canonical): operator_aircraft_link from adsb callsign pathway (Stage 2c)`): 231 `operator_aircraft_link` rows attributing trustee-held aircraft to their actual operators via ICAO designator matching. Pathway works; volume scales with `adsb_positions` accumulation.
+
+The "callsign pathway blocked" framing is preserved above because the diagnosis-correction sequence is itself useful: the morning probe of `operator_name` was correct for that field but didn't characterize the entire ADS-B ingest. The right question was "where in the schema is callsign data" — and the answer is `adsb_positions`, which we'd have found via `describe-schema`.
+
+The leg-aggregator-side enhancement (carry callsign forward into `adsb_completed_legs`) is still a valid follow-up — would make queries hit 21M historical legs instead of the `adsb_positions` snapshot. Lower priority than initially framed; queue when `adsb_completed_legs` becomes the hot query path.

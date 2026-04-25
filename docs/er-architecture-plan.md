@@ -226,22 +226,21 @@ Public records only. Never LinkedIn. Rule: persons exist only linked to an Opera
 
 **Revised walk-rate target**: 1–3% raw, not 15–30%. The earlier target implicitly assumed operator coverage would match the flying population — it does not, and cannot until the above pathways are built. Reporting any higher number as a success metric would be dishonest.
 
-### Pathway 2: ICAO callsign unmask — blocked, needs ingest change
+### Pathway 2: ICAO callsign unmask — shipped 2026-04-24
 
-Mechanism: trustee-held aircraft (BANK OF UTAH, TVPX, etc.) squawk their operator's ICAO callsign during flight (NetJets aircraft squawk EJA1234, Flexjet aircraft squawk LXJ2345, etc.). Joining the squawked callsign back to `operators.icao_callsign` recovers operator attribution.
+Mechanism: trustee-held aircraft (BANK OF UTAH, TVPX, etc.) squawk their operator's ICAO callsign during flight (NetJets aircraft squawk EJA1234, Flexjet aircraft squawk LXJ2345, etc.). Joining the squawked callsign back to `operators.icao_callsign` recovers operator attribution that the certificate_holder pathway leaves as `no_match`.
 
-Data dependency: ADS-B Mode S flight identifier (the callsign), broadcast by every transponder, currently NOT persisted in `adsb_completed_legs`. Verified 2026-04-24: `operator_name` in legs is a propagated copy of FAA `certificate_holder`, not the squawked callsign. The end-of-day Stage 2c probe (probe 4 across 2,024,897 trustee legs) found 0 bare callsign matches and 461 prefix-with-digit matches — 0.023%, below the noise floor.
+**Implementation**: `scripts/backfill-operator-aircraft-link-from-callsign.ts`. Reads `adsb_positions.callsign`, extracts the 3-letter ICAO prefix via `SUBSTRING(callsign FROM '^([A-Z]{3})')`, JOINs to `public.operators.icao_callsign`, and writes one `canonical.operator_aircraft_link` row per `(aircraft, operator)` pair. Source = `adsb_callsign`, role = `operator`. Idempotent via NOT EXISTS pre-filter on already-attributed aircraft (any open operator-role link, regardless of source).
 
-To unblock:
+**Initial commit volume (2026-04-24)**: 231 link rows across 14 of the 26 operators with ICAO callsigns — NetJets (109), Flexjet (54), Executive Jet Management (12), VistaJet (11), Textron (9), JetRight (7), Contour Aviation (5), Corporate Air (5), Directional Aviation Capital (4), Sun Country (4), Wheels Up (4), JetSuite/JSX (3), XO (3), FlyExclusive (1). The other 12 operators didn't have aircraft airborne during the available `adsb_positions` snapshot.
 
-1. Modify `src/ingestion/adsb-leg-aggregator.ts` (or equivalent leg builder) to persist callsign per leg.
-2. Add `callsign TEXT` column to `adsb_completed_legs` schema (and likely `adsb_aircraft_state` for live state).
-3. Index on `(callsign)` for the JOIN query pattern. Likely also a partial index `WHERE callsign IS NOT NULL` for the hot path.
-4. Forward-only: historical 21M legs have no callsign data. S3 raw-archive reprocess is multi-week scope, deferred.
+**Confidence ladder (position-count based)**: ≥50 → 0.95, ≥10 → 0.85, ≥3 → 0.75, 1–2 → 0.60. The initial commit is all 0.6 because the available snapshot covers a 62-second window. As `adsb_positions` accumulates, re-runs will see higher position counts. Confidence-upgrade-on-re-run is captured as Stage 2c v2 in `docs/phase1-followups.md` (update-in-place pattern, not close-then-insert).
 
-Estimated unblock: 1 session for ingest change + schema migration. Then 30–60 days of natural ingest volume to accumulate enough callsign coverage. Then Stage 2c backfill becomes a clean SQL job: `JOIN operators ON operators.icao_callsign = SUBSTRING(callsign FROM '^([A-Z]{3})')`.
+**Format normalization**: `adsb_positions.icao_hex` uses bare-lowercase (`a087d3`) for most rows and tilde-prefix (`~26a137`) for non-standard Mode S addresses. `normalizeHex` strips the `~` and lowercases; the JOIN to `canonical.aircraft.icao_hex` (always bare lowercase) works on the normalized form.
 
-This pathway, when unblocked, is expected to recover operator attribution for the ~7,000 trustee-held aircraft that account for ~2M legs in the existing data — the bulk of the structural ceiling that CP3 surfaced. The `icao_callsign` column on `public.operators` (shipped 2026-04-24) is the lookup target; the 26 callsigns mapped today (EJA, LXJ, WUP, PCH, VJA, FFL, XSR, JTL, EJM, ...) are exactly what the future ingest-side `flight_id` will JOIN against.
+**Trustee unmask in production** (sample from initial commit): N119JE / N130JE / N315JE / N402JE registered to TVPX TRUSTEE → VistaJet via VJA callsigns. N96PB registered to BANK OF UTAH TRUSTEE → JetSuite/JSX via JTL96. N143QS / N211QS / N469QS registered to mixed entities including BANK OF UTAH and WILMINGTON → NetJets via EJA. These were CP3 `no_match` rows whose certificate_holder didn't resolve to any operator.
+
+**Footnote — earlier "blocked" framing was wrong**. An end-of-day probe initially looked at `adsb_completed_legs.operator_name` and found 0 bare-callsign matches (correct for that field — it's a propagated copy of `faa_aircraft.certificate_holder`). The probe didn't characterize the wider ADS-B ingest. The right question was "where in the schema is the callsign data" — and it's at the position level, in `adsb_positions.callsign` (96.4% populated), where the leg aggregator drops it. Schema inspection corrected the framing within the same session and Stage 2c shipped against `adsb_positions` directly. Carrying callsign forward into `adsb_completed_legs` remains a valid follow-up — would let queries hit 21M historical legs instead of the live snapshot — but is no longer a blocker.
 
 ## Resolution-log table (permanent)
 

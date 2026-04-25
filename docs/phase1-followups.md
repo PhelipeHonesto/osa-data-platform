@@ -589,23 +589,23 @@ Plus a test case each.
 
 ---
 
-## ADS-B ingest: persist Mode S flight_id (callsign) per leg
+## ADS-B ingest: carry callsign forward into adsb_completed_legs
 
-**Discovered**: 2026-04-24, end of Stage 2b session.
+**Discovered**: 2026-04-24, end of Stage 2b session. **Reframed same day** after schema inspection corrected the original "blocked" diagnosis (see `docs/sessions/2026-04-24-stage-2b-aircraft-backfill.md` §"Correction: callsign pathway is NOT blocked").
 
-**Finding**: `adsb_completed_legs.operator_name` is a propagated copy of `faa_aircraft.certificate_holder`, not the ADS-B Mode S flight identifier. The squawked callsign (EJA1234, LXJ2345, etc.) is broadcast by every transponder but currently discarded by leg aggregation. Probe across 2,024,897 trustee legs returned 0 bare callsign matches and 461 prefix-with-digit matches (0.023%) — below the noise floor.
+**Finding**: `adsb_positions.callsign` IS populated (96.4% of rows) and Stage 2c shipped against it directly (commit `d48014d`, 231 link rows). However, the leg aggregator that builds `adsb_completed_legs` from positions drops the callsign field. The 21M historical legs in `adsb_completed_legs` therefore have no callsign data — only the propagated `certificate_holder` in `operator_name`.
 
-**Impact**: Stage 2c trustee unmask via `icao_callsign` matching is blocked. The `icao_callsign` column on operators (shipped 2026-04-24) cannot be used for unmask without this ingest change. This is the single biggest contributor to operator-aircraft walk-rate gain. Without it, walk rate stays bounded by the direct-registration pathway (~50–300 link rows total even with full operator coverage).
+**Impact (revised)**: Stage 2c is NOT blocked — it works against `adsb_positions` today. The follow-up here is a query-pattern optimization: when Stage 2c re-runs scale up and analytics queries want history beyond the live positions snapshot, hitting `adsb_completed_legs` (21M rows, time-bounded leg shape) is cheaper than scanning `adsb_positions` aggregates. The ingest enhancement carries callsign forward so the analytics-friendly table has the data too.
 
 **Fix**:
 
 - Add `callsign TEXT` column to `adsb_completed_legs` (and/or `adsb_aircraft_state` for live state)
-- Modify the ingest worker to capture `flight_id` from raw ADS-B and aggregate per leg (most frequent? first? all distinct as JSONB? — design decision in the unblock session)
+- Modify the ingest worker / leg aggregator to capture `flight_id` from positions and aggregate per leg (most frequent? first? all distinct as JSONB? — design decision in the unblock session)
 - Index on callsign for JOIN performance, likely a partial index `WHERE callsign IS NOT NULL`
 - Migration verification per CLAUDE.md §4 (local Docker up→down→up + Supabase migrate-pg + describe-schema verify)
 - Forward-only ingest. Historical S3 reprocess is a separate, multi-week scope.
 
-**Priority**: HIGH. This is the unblocker for Stage 2c. Schedule for a dedicated next-session block when there's focus for ingest pipeline changes.
+**Priority**: MEDIUM (downgraded from HIGH). Activates when `adsb_completed_legs` becomes the hot query path for Stage 2c analytics. Stage 2c itself ships and grows without this change.
 
 **Out of scope today**: production ingest changes are not end-of-day work.
 
