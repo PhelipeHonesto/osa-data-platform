@@ -74,7 +74,7 @@ export interface ResolverResult {
   reason?: "ambiguous_runner_up" | "low_tier" | "medium_name_only" | null;
 }
 
-interface OperatorCandidate {
+export interface OperatorCandidate {
   operator_id: string;
   canonical_name: string;
   headquarters_icao: string | null;
@@ -82,7 +82,7 @@ interface OperatorCandidate {
   city: string | null;
 }
 
-interface ScoredCandidate {
+export interface ScoredCandidate {
   operator_id: string;
   canonical_name: string;
   score: number;
@@ -134,7 +134,7 @@ async function fetchCandidates(
 
 // ── Scoring ──────────────────────────────────────────────────────────────
 
-function scoreCandidates(
+export function scoreCandidates(
   scraped: ScrapedRecord,
   candidates: OperatorCandidate[],
 ): ScoredCandidate[] {
@@ -164,13 +164,13 @@ function scoreCandidates(
 
 // ── Action decision ──────────────────────────────────────────────────────
 
-interface Decision {
+export interface Decision {
   action: Exclude<ResolverActionKind, "exact">;
   confidence: "high" | "medium" | "low";
   reason?: "ambiguous_runner_up" | "low_tier" | "medium_name_only";
 }
 
-function decide(scored: ScoredCandidate[]): Decision {
+export function decide(scored: ScoredCandidate[]): Decision {
   if (scored.length === 0) {
     return { action: "new", confidence: "high" };
   }

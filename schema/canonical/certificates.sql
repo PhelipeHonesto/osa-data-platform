@@ -2,16 +2,20 @@
 -- Architectural decision logged 2026-04-25 in commit 3b37d7f. Schema spec:
 -- docs/er/certificate.md. Pattern: docs/temporal-link-pattern.md.
 --
--- Seven tables bundled here in dependency order so the canonical/ folder load
+-- Eight tables bundled here in dependency order so the canonical/ folder load
 -- (alphabetical) resolves FKs correctly. Mirrors the aircraft.sql bundling
 -- pattern (aircraft + identities + aliases in one file).
 --
 -- The 7th table (aircraft_on_certificate_pending) was added in Track 6
 -- Step 2b as a sidecar for D085 (cert × tail) pairs whose tail does not
--- resolve to a canonical.aircraft row at ingest time. Keeping it bundled
--- here (rather than in its own file) sidesteps a load-order issue:
--- alphabetical loading would have placed aircraft_on_certificate_pending.sql
--- before certificates.sql, breaking the cert_id FK.
+-- resolve to a canonical.aircraft row at ingest time. The 8th table
+-- (operator_holds_certificate_pending) was added in Track 6 Step 2c as
+-- the analogous sidecar on the operator side: D085 (cert × holder_name)
+-- pairs whose holder_name does not resolve to a public.operators row via
+-- the calibrated entity-resolution matcher. Keeping both bundled here
+-- (rather than in their own files) sidesteps a load-order issue: alphabetical
+-- loading would have placed *_pending.sql before certificates.sql,
+-- breaking the cert_id FK.
 --
 -- Empty on arrival. Population is Track 6 Step 2+ (FAA Air Carrier DB,
 -- OpSpec D085 fleet auth, DOT Part 295/298 corroboration, ARGUS/Wyvern).
@@ -422,3 +426,81 @@ CREATE INDEX IF NOT EXISTS idx_aocp_unresolved
   WHERE resolved_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_aocp_reason
   ON canonical.aircraft_on_certificate_pending (reason);
+
+
+-- ── canonical.operator_holds_certificate_pending ──────────────────────────
+-- Sidecar for D085 (cert × holder_name) pairs whose holder_name did not
+-- resolve to a public.operators row at Step 2c ingest time. Common reasons:
+--   - Part 121 majors (Delta, AA, UA), cargo operators, helicopter operators
+--     not yet onboarded to canonical.operators (currently charter/Part 135 tilted)
+--   - Brand-consolidation cases where the D085 holder is a subsidiary legal
+--     entity not yet merged into a parent canonical operator
+--     (e.g. "Wheels Up Partners LLC" → "Wheels Up" before subsidiary mapping)
+--   - Foreign cert holders mapping to US-brand canonical operators
+--     (VistaJet GmbH ↔ VistaJet US) when the cross-jurisdictional link is
+--     not yet recorded
+--
+-- Step 5 (DOT Part 295/298 corroboration) and follow-up curation re-resolve
+-- these by setting resolved_at + resolved_to_operator_id; a follow-up promotes
+-- the resolved row into canonical.operator_holds_certificate proper.
+--
+-- Single-reason CHECK by design — review-tier matches live in
+-- canonical.operator_match_review (do not split source-of-truth across two
+-- tables). cert-not-in-canonical-certificates is impossible by construction:
+-- the Step 2c backfill iterates *over* canonical.certificates.
+--
+-- Kept bundled in this file rather than its own .sql to keep the FK to
+-- canonical.certificates(cert_id) ahead of it in alphabetical load order
+-- (mirrors the 7th table's bundling rationale).
+CREATE TABLE IF NOT EXISTS canonical.operator_holds_certificate_pending (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  cert_id UUID NOT NULL REFERENCES canonical.certificates(cert_id) ON DELETE RESTRICT,
+
+  -- Holder name as observed in D085 vs. canonical-form (UPPER + TRIM +
+  -- collapse whitespace). No suffix-stripping (Inc/LLC/Corp) — that's the
+  -- resolver's job via Jaro-Winkler/trigram. Keep raw text fidelity.
+  holder_name_as_provided TEXT NOT NULL,
+  holder_name_normalized TEXT NOT NULL,
+
+  -- Mirrors operator_holds_certificate window shape so a future SELECT into
+  -- operator_holds_certificate (after manual or Step 5 resolution) is a
+  -- column-for-column copy with no derivation work.
+  valid_from DATE NOT NULL,
+  valid_to DATE,
+  CHECK (valid_to IS NULL OR valid_to > valid_from),
+
+  source TEXT NOT NULL,
+  source_url TEXT,
+  source_timestamp TIMESTAMPTZ,
+  ingestion_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  evidence JSONB,
+
+  reason TEXT NOT NULL
+    CHECK (reason IN (
+      'no_canonical_operator_candidate'
+    )),
+
+  -- Resolution audit. Both NULL while pending; both set together once a
+  -- human or Step 5 corroboration lifts the row. CHECK keeps the pair
+  -- consistent.
+  resolved_at TIMESTAMPTZ,
+  resolved_to_operator_id UUID REFERENCES public.operators(id) ON DELETE RESTRICT,
+  CHECK (
+    (resolved_at IS NULL AND resolved_to_operator_id IS NULL)
+    OR (resolved_at IS NOT NULL AND resolved_to_operator_id IS NOT NULL)
+  ),
+
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  schema_version INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_ohcp_cert_valid_from
+  ON canonical.operator_holds_certificate_pending (cert_id, valid_from DESC);
+CREATE INDEX IF NOT EXISTS idx_ohcp_holder_normalized
+  ON canonical.operator_holds_certificate_pending (holder_name_normalized);
+CREATE INDEX IF NOT EXISTS idx_ohcp_unresolved
+  ON canonical.operator_holds_certificate_pending (cert_id)
+  WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_ohcp_reason
+  ON canonical.operator_holds_certificate_pending (reason);
