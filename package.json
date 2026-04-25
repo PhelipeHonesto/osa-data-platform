@@ -32,6 +32,7 @@
     "embeddings:build": "tsx src/analytics/embeddings.ts",
     "safety:refresh": "tsx scripts/refresh-safety-ratings.ts",
     "operators:backfill-faa": "tsx scripts/backfill-operators-canonical-faa.ts",
+    "certs:backfill-d085": "tsx scripts/backfill-canonical-certificates-from-d085.ts",
     "operators:backfill-faa-realfleet": "tsx scripts/backfill-operators-canonical-faa-realfleet.ts",
     "operators:backfill-icao-callsign": "tsx scripts/backfill-operators-icao-callsign.ts",
     "operators:backfill-callsign-pathway": "tsx scripts/backfill-operator-aircraft-link-from-callsign.ts",
@@ -61,6 +62,7 @@
     "pino": "^10.3.1",
     "tar": "^7.5.13",
     "ulid": "^3.0.2",
+    "xlsx": "^0.18.5",
     "zod": "^3.24.0"
   },
   "devDependencies": {
