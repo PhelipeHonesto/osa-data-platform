@@ -216,3 +216,54 @@ Format: `(certificate_number, canonical_name, icao_callsign)`. The cert and the 
 Backfill source: `public.faa_operators` rows where `aircraft_count >= 20 AND TRIM(UPPER(certificate_number)) != TRIM(UPPER(name))`, queried 2026-04-24. The certificate_number column in faa_operators carries the ICAO callsign for these specific entries (a quirk of the FAA-operators-full ingestor's ICAO_OPERATOR_MAP, see `docs/phase1-followups.md` §"faa-operators-full.ts ingests aircraft owners as operators").
 
 When the `icao_callsign` column lands on `public.operators`, this appendix can be replayed as a SQL backfill keyed by the canonical_name match.
+
+### Deferred ICAO callsigns — input for next curated merge
+
+113 `faa_operators` rows have 3-letter dba_name values but are not yet in `canonical.operators`. The `icao_callsign` column will auto-populate when these operators get merged (the backfill script `scripts/backfill-operators-icao-callsign.ts` is idempotent and re-runnable — `icao_callsign IS NULL` guard means re-runs only touch rows that haven't been set).
+
+Top 30 deferred by aircraft_count:
+
+```
+GPD  Global Crossing Airlines                              fleet=19  cert=GPD
+SLH  Silver Air                                            fleet=18  cert=SLH
+YEL  Yellow Checker Star                                   fleet=18  cert=YEL
+KFS  Key Air                                               fleet=17  cert=KFS
+COL  Comlux Completion                                     fleet=16  cert=COL
+LJY  Jet Linx Aviation                                     fleet=16  cert=LJY
+NJM  Northern Jet Management                               fleet=16  cert=NJM
+RAX  Royal Air Freight                                     fleet=16  cert=RAX
+JCY  Jet City Aviation                                     fleet=15  cert=JCY
+XFL  XcelAir                                               fleet=15  cert=XFL
+JTZ  JetAccess Aviation                                    fleet=14  cert=JTZ
+LKF  NDC EQUIPMENT LEASING LLC                             fleet=14  cert=LKF
+MTN  FEDERAL EXPRESS CORPORATION                           fleet=14  cert=MTN
+SIS  Solairus Aviation                                     fleet=14  cert=SIS
+CYO  ATI JET INC                                           fleet=13  cert=CYO
+DRL  TVPX AIRCRAFT SOLUTIONS INC TRUSTEE                   fleet=13  cert=DRL
+ERY  FU AIR LLC, JACOB GK LLC                              fleet=13  cert=ERY
+IJA  PRIMUS CAPITAL LLC                                    fleet=13  cert=IJA
+PCM  Pacific Mission Aviation                              fleet=13  cert=PCM
+BVN  FEDERAL EXPRESS CORPORATION                           fleet=12  cert=BVN
+CFS  Corporate Flight Services                             fleet=12  cert=CFS
+JLG  LONE STAR STORAGE TRAILERS INC                        fleet=12  cert=JLG
+DLX  WLGB200 LLC                                           fleet=11  cert=DLX
+PXT  SKYWAY AVIATION SERVICES INC                          fleet=11  cert=PXT
+SJJ  GHS LEASING CO, TANGO BRAVO LLC                       fleet=11  cert=SJJ
+VNT  ZUBI5372 LLC                                          fleet=11  cert=VNT
+WCC  BEDOUIN LLC                                           fleet=11  cert=WCC
+WMN  TVPX AIRCRAFT SOLUTIONS INC TRUSTEE                   fleet=11  cert=WMN
+BRG  BERING AIR INC                                        fleet=10  cert=BRG
+USC  KALITTA CHARTERS LLC                                  fleet=8   cert=USC
+```
+
+Notable categorizations from inspection of the full 113-row list:
+
+- **Real Part 135 charter** (clear merge candidates): SLH (Silver Air), KFS (Key Air), LJY (Jet Linx Aviation), NJM (Northern Jet Management), JCY (Jet City Aviation), XFL (XcelAir), JTZ (JetAccess Aviation), SIS (Solairus Aviation), CYO (ATI JET INC), CFS (Corporate Flight Services), BRG (Bering Air), USC (Kalitta Charters).
+- **Air ambulance / medevac**: EMD (EagleMed, fleet=6), CMD (REACH Air Medical Services, fleet=2). Decision needed: do these belong in `canonical.operators` with `operator_type='medevac'` (would require adding 'medevac' to the operator_type CHECK enum), or are they out of charter scope?
+- **Government / non-commercial**: FLC (FAA, fleet=3), VLY (Tennessee Valley Authority, fleet=2), BOE (Boeing corporate, fleet=4). Skip via new `skipped_government` / `skipped_corporate` resolver buckets, or maintain an explicit exclusion list in `pre-filters.ts`.
+- **Cargo**: RAX (Royal Air Freight, fleet=16), MTN/BVN/IRO/WIG (FedEx regional callsigns — different cert numbers per region). Decision needed: is cargo in scope for canonical operators? They're real Part 135/121 carriers but not charter.
+- **Borderline**: GPD (Global Crossing Airlines — Part 121/135 hybrid scheduled+charter), YEL (Yellow Checker Star — small air taxi), COL (Comlux Completion — paint/completion shop, not an operator at all despite the cert).
+
+Next curated merge planning: filter the 113 deferred to pure-Part-135-charter (~30 operators), exclude government/corporate/cargo/borderline. Decision on medevac scope is its own conversation — likely a small follow-up that adds 'medevac' to the `operator_type` CHECK and merges EMD + CMD with that classification.
+
+The full 113-row deferred list was preserved in `/tmp/icao-commit.log` from this run; the list is stable across re-runs and can be regenerated any time via `npm run operators:backfill-icao-callsign` (dry-run).
