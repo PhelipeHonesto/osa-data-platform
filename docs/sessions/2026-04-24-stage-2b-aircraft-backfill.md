@@ -390,3 +390,17 @@ Late afternoon + evening:
 ### Deferred ICAO callsigns (future curated merges)
 
 113 rows in `faa_operators` with 3-letter `dba_name` values not yet in canonical. Full list in `/tmp/icao-commit.log` on this machine. Top 12 green rows queued for next session's curated merge (see above).
+
+## Session pause point (night, 2026-04-24 — async work pending)
+
+Curated mid-tier merge shipped: commits `bf7abf2` + `d1408e7` on origin/main. 304 operators total, 38 with `icao_callsign`, 267 `operator_aircraft_link` rows (231 + 26 from this evening's Stage 2c re-run).
+
+CP3 re-resolve running in background (pid 278, started ~21:11 local / 02:11Z 2026-04-25, run_id `rerun_20260425T021140Z`). Log at `/tmp/cp3-rerun-20260425.log`. ETA ~2.5h. A scheduled agent will capture the delta when it finishes, draft commit 3, and wait for approval to push.
+
+If the scheduled agent's commit 3 lands tonight, today's total is 19 commits. If it fires successfully tomorrow morning, the delta measurement still reflects today's work since no new writes happened between CP3 start and its completion.
+
+### Architectural case studies worth noting from today
+
+1. **Seven-role model validated** via the FedEx/CFS feeder case (commit `d1408e7`): aircraft registered to a legitimate corporation (FedEx) can be attributed as operated by a different entity (Corporate Flight Services) via callsign squawk, without conflict. `role='legal_owner'` vs `role='operator'` coexist on the temporal link table. Both queryable, both provenance-backed. This is the architectural payoff that justifies the 7-role complexity over a simpler "operator" attribution model.
+
+2. **The curated merge pattern (cert-list bypass of threshold) is now reusable infrastructure.** Next time a probe surfaces a specific operator not in canonical, merging it is one CLI argument: `npm run operators:backfill-faa-realfleet -- --cert-numbers=A,B,C --commit`. No new script, no new rollback, no new migration. Canonical-name dup detection is built in (4 of 12 in this evening's run hit the merge path; existing operators preserved, audit trail clean).
