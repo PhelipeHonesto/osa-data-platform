@@ -95,19 +95,32 @@ export function formatRunId(mode: Mode = "new_only", now: Date = new Date()): st
  * stop them from being processed.
  *
  *   new_only             — exclude any aircraft with ANY resolution_log row.
- *   re_resolve_no_match  — exclude only aircraft with a non-no_match row.
- *                          Aircraft that have only no_match rows (or no
- *                          rows at all) are eligible.
+ *   re_resolve_no_match  — exclude aircraft that either (a) have a
+ *                          non-no_match row from any prior run, OR
+ *                          (b) have already been touched by THIS run.
+ *                          The (b) clause is what makes the batch loop
+ *                          terminate — without it, a no_match write does
+ *                          not change the inclusion criteria, so the same
+ *                          rows get re-fetched batch after batch and the
+ *                          ON CONFLICT (aircraft_id, backfill_run_id) on
+ *                          the log table silently no-ops the duplicate
+ *                          writes (run_id rerun_20260425T021140Z hit this
+ *                          and idle-looped for ~12h before being killed).
+ *
+ * runIdParamIndex is the $N number that callers will bind the current
+ * runId to in their full param list. For new_only mode the runId is not
+ * referenced and the index is ignored.
  *
  * Returned fragment is the body of a NOT EXISTS subquery; callers wrap it
  * with `AND NOT EXISTS (...)`.
  */
-export function exclusionSubquery(mode: Mode): string {
+export function exclusionSubquery(mode: Mode, runIdParamIndex: number): string {
   const baseExclusion = `SELECT 1 FROM canonical.operator_aircraft_resolution_log r
            WHERE r.aircraft_id = ai.aircraft_id`;
   if (mode === "re_resolve_no_match") {
     return `${baseExclusion}
-             AND r.resolver_action != 'no_match'`;
+             AND (r.resolver_action != 'no_match'
+                  OR r.backfill_run_id = $${runIdParamIndex})`;
   }
   return baseExclusion;
 }
@@ -121,13 +134,19 @@ interface RowToProcess {
   faa_created_at: Date;
 }
 
-async function countRemaining(client: pg.PoolClient, mode: Mode): Promise<number> {
+async function countRemaining(
+  client: pg.PoolClient,
+  mode: Mode,
+  runId: string,
+): Promise<number> {
+  const isReResolve = mode === "re_resolve_no_match";
   const r = await client.query<{ n: string }>(
     `SELECT COUNT(*)::bigint AS n
        FROM canonical.aircraft_identities ai
        JOIN faa_aircraft fa ON fa.tail_number = ai.source_id
       WHERE ai.source = 'faa'
-        AND NOT EXISTS (${exclusionSubquery(mode)})`,
+        AND NOT EXISTS (${exclusionSubquery(mode, 1)})`,
+    isReResolve ? [runId] : [],
   );
   return Number.parseInt(r.rows[0]!.n, 10);
 }
@@ -143,7 +162,12 @@ async function fetchBatch(
   client: pg.PoolClient,
   batchSize: number,
   mode: Mode,
+  runId: string,
 ): Promise<RowToProcess[]> {
+  // re_resolve mode binds runId at $1 and batchSize at $2; new_only mode
+  // doesn't reference runId and binds batchSize at $1.
+  const isReResolve = mode === "re_resolve_no_match";
+  const limitParamIndex = isReResolve ? 2 : 1;
   const res = await client.query<RowToProcess>(
     `SELECT
        ai.aircraft_id,
@@ -155,10 +179,10 @@ async function fetchBatch(
        FROM canonical.aircraft_identities ai
        JOIN faa_aircraft fa ON fa.tail_number = ai.source_id
       WHERE ai.source = 'faa'
-        AND NOT EXISTS (${exclusionSubquery(mode)})
+        AND NOT EXISTS (${exclusionSubquery(mode, 1)})
       ORDER BY ai.aircraft_id
-      LIMIT $1`,
-    [batchSize],
+      LIMIT $${limitParamIndex}`,
+    isReResolve ? [runId, batchSize] : [batchSize],
   );
   return res.rows;
 }
@@ -462,7 +486,7 @@ async function main(): Promise<void> {
     const candidatePool = await countCandidatePool(client);
     console.log(`[cp3] candidate operator pool: ${candidatePool.toLocaleString()} (public.operators)`);
 
-    const startRemaining = await countRemaining(client, args.mode);
+    const startRemaining = await countRemaining(client, args.mode, runId);
     console.log(`[cp3] rows remaining: ${startRemaining.toLocaleString()}`);
     if (startRemaining === 0) {
       console.log(`[cp3] nothing to do.`);
@@ -477,7 +501,7 @@ async function main(): Promise<void> {
       batchNum++;
       await client.query("BEGIN");
       try {
-        const rows = await fetchBatch(client, args.batchSize, args.mode);
+        const rows = await fetchBatch(client, args.batchSize, args.mode, runId);
         if (rows.length === 0) {
           await client.query("ROLLBACK");
           break;
@@ -529,7 +553,7 @@ async function main(): Promise<void> {
     console.log(`[cp3] writes: links=${cumulative.linksWritten} reviews=${cumulative.reviewsWritten}`);
 
     if (args.maxBatches !== null && args.write) {
-      const rowsLeft = await countRemaining(client, args.mode);
+      const rowsLeft = await countRemaining(client, args.mode, runId);
       const completed = cumulative.processed;
       const fractionDone = completed / (completed + rowsLeft);
       const extrapMs = wallMs / Math.max(fractionDone, 0.0001);
