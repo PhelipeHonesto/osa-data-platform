@@ -1,0 +1,59 @@
+{
+  "decision": "new_entity",
+  "decision_target_operator_id": null,
+  "decision_subtype": "distinct_legal_entity",
+  "confidence": 0.72,
+  "verbatim_quotes": [
+    {
+      "url": "https://acejet.com/operators/summit-aviation-inc/",
+      "quote": "Summit Aviation, Inc. is a FAA Part 135 certified charter operator with a fleet of 21 aircraft including 21 light.",
+      "supports_claim": "The only named US Part 135 operator resembling this holder is 'Summit Aviation, Inc.' — a distinct legal entity (Inc., not LLC) with a different fleet profile (Phenom 300s, Helena FSDO), confirming the FAA holder 'Summit Aviation LLC' is a separate entity."
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Summit_Aviation",
+      "quote": "Summit Air (8199400 Canada Inc.) is a Canadian airline headquartered in Yellowknife that operates scheduled, charter and cargo aviation throughout the Northwest Territories, Nunavut, and Yukon.",
+      "supports_claim": "The only Wikipedia entity associated with 'Summit Aviation' is a Canadian airline operating under a Canadian corporate number, not a US LLC holding FAA Part 135 cert 704A, confirming that 'Summit Aviation LLC' is not this entity."
+    }
+  ],
+  "reasoning": "The candidate list provided is empty — there are no pre-existing canonical operators to match against, making NEW_ENTITY the only valid decision class. Exhaustive web searches and scrapes (8 total attempts) found no web presence for 'Summit Aviation LLC' as a distinct US charter operator. The two aviation entities found under similar names are 'Summit Aviation, Inc.' (a US Part 135 operator with a different legal suffix, different fleet, and different FSDO) and 'Summit Air' (a Canadian airline). Neither matches the FAA holder name 'Summit Aviation LLC' with cert designator 704A. The entity should be created fresh in the canonical database.",
+  "firecrawl_urls_fetched": [
+    "https://www.summitaviationllc.com",
+    "https://acejet.com/operators/summit-aviation-inc/",
+    "https://acejet.com/operators/summit-aviation-llc/",
+    "https://www.flyingprivate.org/operators",
+    "https://www.aviationdb.com/Aviation/AirOperatorQuery.shtm",
+    "https://en.wikipedia.org/wiki/Summit_Aviation",
+    "https://av-info.faa.gov/oprequest.asp",
+    "https://www.summitaviation.com",
+    "https://www.charterflights.com/operators/summit-aviation"
+  ],
+  "firecrawl_pages": [
+    {
+      "url": "https://www.summitaviationllc.com",
+      "content": "ERROR: All scraping engines failed to retrieve content from this URL.",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://acejet.com/operators/summit-aviation-inc/",
+      "content": "Summit Aviation, Inc.\n=====================\n\nFAA Part 135 Charter Operator · 21 aircraft\n\nAbout Summit Aviation, Inc.\n---------------------------\n\nSummit Aviation, Inc. is a FAA Part 135 certified charter operator with a fleet of 21 aircraft including 21 light. The fleet has an average age of 2.9 years, with the newest aircraft manufactured in 2025. 21 of 21 aircraft hold valid FAA registrations (100%). The operator has a clean NTSB safety record with no reported incidents.\n\nFleet Statistics\n----------------\n\nAvg Fleet Age 2.9 years\n\nNewest Aircraft 2025\n\nOldest Aircraft 2021\n\nValid Registrations 21\n\nOversight Office NM05 - Helena (HLN) (FAA Flight Standards District Office)\n\nEarliest Airworthiness Cert 2023\n\nFleet (21 aircraft)\n-------------------\n\n| Tail Number | Type | Category | Year |\n| N254TX | Phenom 300 | Light | 2025 |\n| N261TX | Phenom 300 | Light | 2024 |\n| N263TX | Phenom 300 | Light | 2024 |\n| N265TX | Phenom 300 | Light | 2024 |\n| N267TX | Phenom 300 | Light | 2024 |\n| N276TX | Phenom 300 | Light | 2025 |\n| N282TX | Phenom 300 | Light | 2021 |\n| N283TX | Phenom 300 | Light | 2021 |\n| N284TX | Phenom 300 | Light | 2022 |\n| N285TX | Phenom 300 | Light | 2023 |\n| N287TX | Phenom 300 | Light | 2023 |\n| N289TX | Phenom 300 | Light | 2022 |\n| N290TX | Phenom 300 | Light | 2023 |\n| N291TX | Phenom 300 | Light | 2023 |\n| N292TX | Phenom 300 | Light | 2023 |\n| N293TX | Phenom 300 | Light | 2024 |\n| N294TX | Phenom 300 | Light | 2023 |\n| N295TX | Phenom 300 | Light | 2023 |\n| N297TX | Phenom 300 | Light | 2022 |\n| N298TX | Phenom 300 | Light | 2023 |\n| N517TX | Phenom 300 | Light | 2023 |",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://acejet.com/operators/summit-aviation-llc/",
+      "content": "Not Found\n=========\n\nThe requested resource was not found on this server.",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Summit_Aviation",
+      "content": "Summit Air (8199400 Canada Inc.) is a Canadian airline headquartered in Yellowknife that operates scheduled, charter and cargo aviation throughout the Northwest Territories, Nunavut, and Yukon. Summit Air is a member of the Ledcor Group of Companies and operates in partnership with several other companies and communities including the Haisla Nation (Summit Kitamaat Aviation Limited Partnership), Air Baffin (Summit Air Baffin), the Det'on Cho Corporation (Det'on Cho Summit Aviation LP), and businesses in the Kitikmeot Region (Summit Air Kitikmeot).\n\nSummit's head office is in Yellowknife and they operate in most of Western Canada with bases in Terrace, Lillooet, and Kamloops in British Columbia, and Fort McMurray, Edmonton, and Calgary in Alberta. In the Northwest Territories, their bases include Yellowknife and Norman Wells. They also operate out of the United Kingdom for the Ministry of Defence and the Falcon Demonstration Team, a parachute team of the Royal Air Force.",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://www.summitaviation.com",
+      "content": "Summit Aviation - Home\n\nDescription: Be current, compliant plus save time finding FAA regulations with our easy to use DVD database of FAA Federal Aviation Regulations.",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    }
+  ],
+  "additional_evidence_needed": null,
+  "cost_estimate_usd": 0.04
+}

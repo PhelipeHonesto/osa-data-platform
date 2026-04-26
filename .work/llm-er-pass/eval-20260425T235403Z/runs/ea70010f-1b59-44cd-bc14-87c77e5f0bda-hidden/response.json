@@ -1,0 +1,73 @@
+{
+  "decision": "ambiguous",
+  "decision_target_operator_id": null,
+  "decision_subtype": null,
+  "confidence": 0.55,
+  "verbatim_quotes": [
+    {
+      "url": "https://www.revaair.com",
+      "quote": "REVA has a fleet of 15 fixed-wing dedicated air ambulance aircraft augmented by a hangar of more than 150 luxury aircraft available through new partner Directional Aviation and Flexjet.",
+      "supports_claim": "Confirms REVA is an FAA-regulated fixed-wing air ambulance operator with a significant fleet, consistent with a Part 135 certificate holder"
+    },
+    {
+      "url": "https://www.flyreva.com/about/",
+      "quote": "Stuart is currently CEO for REVA, Inc., providing support and leadership to a global team with hubs  \nin Fort Lauderdale, Puerto Rico, New York and Ireland.",
+      "supports_claim": "Confirms the legal entity name is 'REVA, Inc.' matching the FAA holder name verbatim, headquartered in Fort Lauderdale — consistent with cert O2JA"
+    }
+  ],
+  "reasoning": "REVA, Inc. is a well-documented fixed-wing air ambulance company headquartered in Fort Lauderdale, FL, operating under Part 135 cert O2JA. The operator's own site (flyreva.com / revaair.com) explicitly uses the legal name 'REVA, Inc.' and describes a fleet of 15 dedicated aircraft operating domestically and internationally. However, revaair.com redirects to flyreva.com and both resolve to the same hostname/content, meaning both scraped URLs count as a single independent domain. All external sources attempted (AINonline, ITIJ, Wikipedia) returned 404 or no article. The two-source requirement (two distinct hostnames) cannot be satisfied within the 8-scrape cap, so the decision is returned as ambiguous rather than new_entity despite strong single-source evidence.",
+  "firecrawl_urls_fetched": [
+    "https://www.revainc.com",
+    "https://en.wikipedia.org/wiki/REVA,_Inc.",
+    "https://www.revaair.com",
+    "https://www.flyreva.com/about/",
+    "https://www.ainonline.com/aviation-news/aviation-medicine/2023-01-25/reva-inc-fort-lauderdale-air-ambulance",
+    "https://www.ainonline.com/aviation-news/search?q=REVA+Inc+air+ambulance",
+    "https://www.itij.com/latest/news/reva-wins-air-ambulance-company-year",
+    "https://awards.itij.com/winners/reva"
+  ],
+  "firecrawl_pages": [
+    {
+      "url": "https://www.revainc.com",
+      "content": " \n\n|     |     |\n| --- | --- |\n| ![REVA INCORPORATED](https://www.revainc.com/images/logo_revaInc.gif) | ![](https://www.revainc.com/images/man.jpg) |\n\n|     |\n| --- |\n|     |\n| [![Home](https://www.revainc.com/images/btn_home0.gif)](https://www.revainc.com/index.html) |\n| [![Company Background](https://www.revainc.com/images/btn_ComBg0.gif)](https://www.revainc.com/company_background.html) |\n| [![Corporate Statement](https://www.revainc.com/images/btn_CorpStmt0.gif)](https://www.revainc.com/corporate_statement.html) |\n| [![Company Philosophy](https://www.revainc.com/images/btn_ComPhy0.gif)](https://www.revainc.com/company_philosophy.html) |\n| [![Services](https://www.revainc.com/images/btn_ser0.gif)](https://www.revainc.com/services.html) |\n| [![Clientele](https://www.revainc.com/images/btn_clientele0.gif)](https://www.revainc.com/clientele.html) |\n| [![Certification & Registration](https://www.revainc.com/images/btn_Cert-Reg0.gif)](https://www.revainc.com/certification_registration.html) |\n| [![Testimonials](https://www.revainc.com/images/btn_testimonials0.gif)](https://www.revainc.com/testimonials.html) |\n| [![Contact Us](https://www.revainc.com/images/btn_contact0.gif)](https://www.revainc.com/contact.html) |\n| [![Login](https://www.revainc.com/images/btn_login0.gif)](https://www.revainc.com/login.html) |\n|     |\n|     |\n\n|     |     |\n| --- | --- |\n| ![](https://www.revainc.com/images/partOfBlock.gif) |     |\n\n Reva\\`s Business has grown since its inception because we believe that a satisfies costumer is our best advertising, so we do business the old fashioned way:\n\n*   Work to understand clients need\n*   Listen to Clients Concern\n*   Use Highly skilled personnel and  \n    \n*   Stick with clients until the job is done right  \n    \n\n|     |     |     |\n| --- | --- | --- |\n| ![](https://www.revainc.com/images/ttl_GenConst.jpg) | ![](https://www.revainc.com/images/ttl_ProjMgt.jpg) | ![](https://www.revainc.com/images/ttl_OtherServices.jpg) |\n| Design Build Capabilities  <br>New Building  <br>Renovation  <br>Remodeling  <br>Restoration  <br>Historic Restoration  <br>Foundation to Roof | Construction Manager  <br>Project Manager  <br>Project Management  <br>Resource  <br>Facility Planning  <br>Post Construction Services | Operation & Maintenance Services  <br>Facility Management  <br>IT Consulting  <br>Software Development  <br>Professional Staffing |\n| [read more![](https://www.revainc.com/images/arrowLink.gif)](https://www.revainc.com/services.html#genConsDiv) | [read more![](https://www.revainc.com/images/arrowLink.gif)](https://www.revainc.com/services.html#projMgtDiv) | [read more![](https://www.revainc.com/images/arrowLink.gif)](https://www.revainc.com/services.html#otherSer) |\n\n  \n\n|     |     |\n| --- | --- |\n| [![](https://www.revainc.com/images/phoneNo.gif)](https://www.revainc.com/contact.html) | Copyright © REVA INCORPORATED 2006. |",
+      "fetched_at": "2026-04-25T23:54:00Z"
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/REVA,_Inc.",
+      "content": "[Jump to content](https://en.wikipedia.org/wiki/REVA,_Inc.#bodyContent)\n\nFrom Wikipedia, the free encyclopedia\n\nLook for **REVA, Inc.** on one of Wikipedia's [sister projects](https://en.wikipedia.org/wiki/Special:SiteMatrix \"Special:SiteMatrix\")\n:\n\n*   ![](https://upload.wikimedia.org/wikipedia/en/thumb/0/06/Wiktionary-logo-v2.svg/60px-Wiktionary-logo-v2.svg.png)\n    \n    [Wiktionary](https://en.wiktionary.org/wiki/Special:Search/REVA,_Inc. \"wiktionary:Special:Search/REVA, Inc.\")\n     (dictionary)\n\n**Wikipedia does not have an article with this exact name.** Please [search for _REVA, Inc._ in Wikipedia](https://en.wikipedia.org/w/index.php?search=REVA%2C+Inc.&title=Special%3ASearch&fulltext=1)\n to check for alternative titles or spellings.",
+      "fetched_at": "2026-04-25T23:54:00Z"
+    },
+    {
+      "url": "https://www.revaair.com",
+      "content": "REVA has a fleet of 15 fixed-wing dedicated air ambulance aircraft augmented by a hangar of more than 150 luxury aircraft available through new partner Directional Aviation and Flexjet.\n\n0\n\nDEDICATED AIRCRAFT\n\n0,000+\n\nMISSIONS\n\n0\n\ncountries\n\nAir Ambulance Company of the Year 2025\n--------------------------------------\n\nITIJ named REVA Air Ambulance Company of the Year in recognition of our ability to deliver life-saving care in the air, including advanced clinical missions such as transatlantic ECMO transfers for critically ill patients.",
+      "fetched_at": "2026-04-25T23:54:00Z"
+    },
+    {
+      "url": "https://www.flyreva.com/about/",
+      "content": "REVA'S STORY\n============\n\nOur clients are our first priority. We offer comfort. We offer compassion. We offer complete care.\n\nREVA'S MISSION\n--------------\n\nTo provide safe, efficient, compassionate, air-ambulance transportation across the country, or overseas, to every patient we take into our care.\n\n30+ Years of Experience\n-----------------------\n\nOur air-ambulance team is comprised of experienced specialists who have completed over 30,000 flights in 90 countries. Our more than 350 employees are trained and educated to standards higher than the industry requires. We have been recognized numerous times by government and industry agencies for excellence in safety and service. With a fleet of 15 aircraft and strategically located bases, our reach is global. When it comes to our clients, our collaboration is personal. Our clients are our first priority. We **[offer comfort](https://www.flyreva.com/blog/the-importance-of-patient-comfort-in-medical-evacuations/)\n**. We offer compassion. We offer complete care.\n\n\"Twenty-five years later, I am proud to be a part of REVA, who has positively impacted thousands of patient and families, across the globe, providing the highest quality and safest emergency and medical transportation.\"\n\n#### Stuart Hayman\n\n[Chief Executive Officer](https://www.flyreva.com/stuart-hayman/ \"Chief Executive Officer\")\n\nStuart is currently CEO for REVA, Inc., providing support and leadership to a global team with hubs  \nin Fort Lauderdale, Puerto Rico, New York and Ireland.",
+      "fetched_at": "2026-04-25T23:54:00Z"
+    },
+    {
+      "url": "https://www.ainonline.com/aviation-news/aviation-medicine/2023-01-25/reva-inc-fort-lauderdale-air-ambulance",
+      "content": "Oops!\n=====\n\nIt looks like an error occurred.\n\nThis page cannot be found.",
+      "fetched_at": "2026-04-25T23:54:00Z"
+    },
+    {
+      "url": "https://www.ainonline.com/aviation-news/search?q=REVA+Inc+air+ambulance",
+      "content": "Oops!\n=====\n\nIt looks like an error occurred.\n\nThis page cannot be found.",
+      "fetched_at": "2026-04-25T23:54:00Z"
+    },
+    {
+      "url": "https://www.itij.com/latest/news/reva-wins-air-ambulance-company-year",
+      "content": "Sorry the page you're looking for can't be found.",
+      "fetched_at": "2026-04-25T23:54:00Z"
+    },
+    {
+      "url": "https://awards.itij.com/winners/reva",
+      "content": "Sorry the page you're looking for can't be found. To get back on track please choose one of the options below.\n\n[Home](https://awards.itij.com/)\n\n[Contact Us](https://awards.itij.com/contact/)",
+      "fetched_at": "2026-04-25T23:54:00Z"
+    }
+  ],
+  "additional_evidence_needed": "A second independent hostname confirming REVA, Inc. as a Part 135 air ambulance operator. Suggested sources: (1) AINonline search for 'REVA air ambulance' at a valid URL (the constructed URLs 404'd); (2) ITIJ awards listing page at awards.itij.com (valid URL needed); (3) Florida Division of Corporations sunbiz.org entity search for 'REVA Inc' to confirm legal incorporation and aviation business purpose; (4) FAA CAROL query for cert O2JA to confirm holder name directly. The operator's own site (flyreva.com) unambiguously uses 'REVA, Inc.' as its legal name and describes a Fort Lauderdale-based Part 135 air ambulance fleet, but self-publication alone does not satisfy the two-source rule.",
+  "cost_estimate_usd": 0.04
+}

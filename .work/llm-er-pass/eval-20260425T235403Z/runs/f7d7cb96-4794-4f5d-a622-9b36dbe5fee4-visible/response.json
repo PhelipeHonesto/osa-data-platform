@@ -1,0 +1,54 @@
+{
+  "decision": "match",
+  "decision_target_operator_id": "097b13d7-8db5-4a31-9371-71c80c77246d",
+  "decision_subtype": "exact_alias",
+  "confidence": 0.85,
+  "verbatim_quotes": [
+    {
+      "url": "https://jetandco.com/companies/keystone-aviation-llc/845",
+      "quote": "Keystone Aviation, llc\n\n303 N 2370 W\n\nUT 84116Salt Lake City\n\nUtah, United States\n\nAOC/Part-135: B8MA127H",
+      "supports_claim": "Confirms the FAA certificate holder 'Keystone Aviation, LLC' at Salt Lake City UT with cert designator B8MA, matching the input record exactly."
+    },
+    {
+      "url": "https://eag.aero/wp-content/uploads/KA-Fleet-Sheet-120922.pdf",
+      "quote": "KeystoneAviation.com charter@keystoneaviation.com Salt Lake City International Airport 303 North 2370 West Salt Lake City, UT Keystone Aviation operates charter air transportation services under 14 CFR Part 135",
+      "supports_claim": "Second independent source (eag.aero PDF) confirms Keystone Aviation as a Part 135 operator at the same Salt Lake City address, with the same contact details, consistent with the canonical operator record."
+    },
+    {
+      "url": "https://eag.aero/keystone-aviation-management-charter/",
+      "quote": "Acquired in 2022, Elevate Jet is a wholly-owned subsidiary of Elevate Aviation Group. It has been a premier provider of aircraft charter, management, and sales and brokerage services for almost 30 years.\n  \nBased in Salt Lake City, UT",
+      "supports_claim": "Confirms the Keystone Aviation URL now redirects to Elevate Jet (acquired 2022), establishing that the Salt Lake City Part 135 operator known as Keystone Aviation is the same entity, now operating under the Elevate Jet brand within Elevate Aviation Group."
+    }
+  ],
+  "reasoning": "The FAA cert holder 'Keystone Aviation, LLC' matches candidate [1] 'Keystone Aviation' on three independent data points: the cert designator B8MA appears on the JET&CO listing for 'Keystone Aviation, llc', the address (303 N 2370 W, Salt Lake City, UT 84116) is confirmed in the eag.aero fleet PDF, and the eag.aero Keystone URL corroborates the same Salt Lake City Part 135 operator. The 'LLC' suffix is simply the legal entity form of the commercial operator named in the canonical database as 'Keystone Aviation' — both refer to the same business. The operator was subsequently acquired in 2022 by Elevate Aviation Group and rebranded as Elevate Jet, but during the FAA cert window (2023-01-25 to 2024-11-27) still held cert B8MA under the Keystone Aviation, LLC legal name.",
+  "firecrawl_urls_fetched": [
+    "https://en.wikipedia.org/wiki/Keystone_Aviation",
+    "https://jetandco.com/companies/keystone-aviation-llc/845",
+    "https://eag.aero/wp-content/uploads/KA-Fleet-Sheet-120922.pdf",
+    "https://eag.aero/keystone-aviation-management-charter/"
+  ],
+  "firecrawl_pages": [
+    {
+      "url": "https://en.wikipedia.org/wiki/Keystone_Aviation",
+      "content": "Wikipedia does not have an article with this exact name. Please search for Keystone Aviation in Wikipedia to check for alternative titles or spellings.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://jetandco.com/companies/keystone-aviation-llc/845",
+      "content": "Keystone Aviation, llc\n======================\n\n303 N 2370 W\n\nUT 84116Salt Lake City\n\nUtah, United States\n\nAOC/Part-135: B8MA127H\n\nEmail\n\n+1 (801) 933-7570\n\neag.aero/keystone-aviation-management-charter/\n\n### Certifications\n\nARGUS ( Platinum)\n\nWYVERN\n\nJET&CO does not warrant the accuracy, currency or completeness of AOC/Part-135 and aircraft records. It accepts no liability for any loss you may suffer as a result of using or relying on them. JET&CO makes all reasonable efforts to keep these records current.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://eag.aero/wp-content/uploads/KA-Fleet-Sheet-120922.pdf",
+      "content": "OUR EXECUTIVE FLEET PASSENGERS: 10 RANGE (MILES): 3,800 BASE: SALT LAKE CITY, UT GULFSTREAM G200 PASSENGERS: 7 RANGE (MILES): 3,400 BASE: SALT LAKE CITY, UT GULFSTREAM G150 PASSENGERS: 15 RANGE (MILES): 6,000 BASE: VAN NUYS, CA BOMBARDIER GLOBAL EXPRESS PASSENGERS: 9 RANGE (MILES): 2,800 BASE: NORWOOD, MA CITATION SOVEREIGN PASSENGERS: 7 RANGE (MILES): 2,100 BASE: NEW BEDFORD, MA PILATUS PC-12 + 1 801 933 7500 KeystoneAviation.com charter@keystoneaviation.com Salt Lake City International Airport 303 North 2370 West Salt Lake City, UT Keystone Aviation operates charter air transportation services under 14 CFR Part 135, FAA Air Carrier Certificate 3LJA9830 and is an agent for Elevate Jet, LLC (FAA# 3LJA9830) and Air Chathams Limited (CAA# AOC26883). PASSENGERS: 4 RANGE (MILES): 1,300 BASE: SALT LAKE CITY, UT PHENOM 100 OUR EXECUTIVE FLEET",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://eag.aero/keystone-aviation-management-charter/",
+      "content": "aircraft management & charter solutions\n=======================================\n\nAircraft Management\n\nNationwide Resource  \nfor Aircraft Management\n---------------------------------------------\n\nAcquired in 2022, Elevate Jet is a wholly-owned subsidiary of Elevate Aviation Group. It has been a premier provider of aircraft charter, management, and sales and brokerage services for almost 30 years.  \n  \nBased in Salt Lake City, UT, the aviation company maintains a diverse fleet of private jet aircraft for charter to fit any trip or budget and provides tailored travel solutions to meet business and personal travel needs. Elevate Jet offers the added benefit of in-house maintenance capabilities through its affiliated FAA-certified Part 145 MRO facilities, ensuring seamless support and maximum aircraft availability. The company is also regularly audited by third-party industry examiners, including Argus and Wyvern.\n\n© 2025 Elevate Aviation Group, LLC d/b/a Elevate Aviation. All rights reserved.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    }
+  ],
+  "additional_evidence_needed": null,
+  "cost_estimate_usd": 0.05
+}

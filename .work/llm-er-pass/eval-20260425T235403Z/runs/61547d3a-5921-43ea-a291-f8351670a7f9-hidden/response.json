@@ -1,0 +1,43 @@
+{
+  "decision": "new_entity",
+  "decision_target_operator_id": null,
+  "decision_subtype": "distinct_legal_entity",
+  "confidence": 0.85,
+  "verbatim_quotes": [
+    {
+      "url": "https://www.executiveflightmgmt.com/",
+      "quote": "Discover Executive Flight Management/Trans American Charter, Ltd., is the answer to your first question.",
+      "supports_claim": "Confirms the FAA holder 'Executive Flight Management' operates under this exact legal name (DBA Trans American Charter, Ltd.) and is a distinct entity unrelated to any of the five candidates."
+    },
+    {
+      "url": "https://v-1x.com/operators/executive-flight-management-il",
+      "quote": "Executive Flight Management is a FAR Part 135 certificated air operator based in Sugar Grove, Il. Certificate: TCHA898I.",
+      "supports_claim": "Independently confirms this is a real, distinct Part 135 operator with certificate prefix TCHA matching the FAA record's cert designator TCHA, based in Sugar Grove, IL — not matching any candidate operator."
+    }
+  ],
+  "reasoning": "Two independent sources confirm 'Executive Flight Management' is a distinct Part 135 operator based in Sugar Grove, IL, DBA 'Trans American Charter, Ltd.', holding FAA certificate TCHA898I (cert prefix matches the prompt's TCHA designator). The operator's own website at executiveflightmgmt.com and the aviation registry v-1x.com both describe the same entity with over 38 years of operating history. None of the five candidates — Executive Aviation Taiwan Corporation, Monterey Pacific Executive Charter, All-Star Executive Aviation, Biggin Hill Executive Aviation, or Falcon Executive Helicopters — share any name, geography, certificate, or organizational connection with this Sugar Grove, IL-based operator. This is a genuinely distinct legal entity that does not exist in the candidate pool.",
+  "firecrawl_urls_fetched": [
+    "https://en.wikipedia.org/wiki/Executive_Flight_Management",
+    "https://www.executiveflightmgmt.com/",
+    "https://v-1x.com/operators/executive-flight-management-il"
+  ],
+  "firecrawl_pages": [
+    {
+      "url": "https://en.wikipedia.org/wiki/Executive_Flight_Management",
+      "content": "From Wikipedia, the free encyclopedia\n\nLook for **Executive Flight Management** on one of Wikipedia's sister projects:\n\n**Wikipedia does not have an article with this exact name.** Please search for _Executive Flight Management_ in Wikipedia to check for alternative titles or spellings.",
+      "fetched_at": "2026-04-25T23:54:00Z"
+    },
+    {
+      "url": "https://www.executiveflightmgmt.com/",
+      "content": "Welcome To Executive Flight Management\n======================================\n\nFor every available aircraft there is a complex matrix of operating scenarios. Our aviation architecture begins with experience and demonstrated performance for over 38 years. Our highly specialized and vertically integrated company provides individual solutions for each customer.\n\nWe are a diverse aircraft management, charter, maintenance and aviation resource. Our credentials include Federal Aviation Regulation 91, 135, 125, 121 and 145 for business and transport aircraft operations. We offer specific expertise on Boeing, Gulfstream, Bombardier, Dassault, Cessna, Raytheon and Embraer ranging from turboprops to light, medium, heavy and transport jet aircraft.\n\nCombining your goals with our approach is the innovative synergy where you fly on the leading edge. Your advantage begins with our desire to listen. Our team of mechanics, pilots, customer service representatives and administrative support staff average more than ten years with this company. We answer all technical questions in understandable common sense.\n\nWe invite you to explore every aspect of business aviation. Please tour our website. Discover Executive Flight Management/Trans American Charter, Ltd., is the answer to your first question.",
+      "fetched_at": "2026-04-25T23:54:00Z"
+    },
+    {
+      "url": "https://v-1x.com/operators/executive-flight-management-il",
+      "content": "Executive Flight Management\n===========================\n\nSugar Grove, IlPart 135\n\nCharter / Air Taxi / Commuter\n\nExecutive Flight Management is a FAR Part 135 certificated air operator based in Sugar Grove, Il. Certificate: TCHA898I.\n\n### FAA Certificate\n\nCertificate Number\n\nTCHA898I\n\nFAR Part\n\nPart 135\n\nCertificate Issued\n\nMay 28, 1986\n\n### Key Personnel\n\nCEO\n\nFrancis, Lincoln\n\nDirector of Operations\n\nMchugh, John F.\n\nChief Pilot\n\nFrancis, Lincoln\n\nDirector of Maintenance\n\nTuck, Robert G. Iii\n\n### Location\n\n43w752 Route 30, Suite 2d\n\nSugar Grove, Il\n\n60554\n\n### About Executive Flight Management\n\nExecutive Flight Management is an FAA-certificated charter / air taxi / commuter operator based in Sugar Grove, IL. The company has held its FAA operating certificate for over 39 years, having been first certificated in 1986. Key personnel include CEO Francis, Lincoln, Director of Operations Mchugh, John F., Chief Pilot Francis, Lincoln.",
+      "fetched_at": "2026-04-25T23:54:00Z"
+    }
+  ],
+  "additional_evidence_needed": null,
+  "cost_estimate_usd": 0.04
+}

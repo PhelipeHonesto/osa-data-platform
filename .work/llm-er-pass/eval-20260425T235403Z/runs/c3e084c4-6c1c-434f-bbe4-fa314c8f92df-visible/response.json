@@ -1,0 +1,32 @@
+{
+  "decision": "ambiguous",
+  "decision_target_operator_id": null,
+  "decision_subtype": null,
+  "confidence": 0.0,
+  "verbatim_quotes": [
+    {
+      "url": "https://www.turnkeyjet.com",
+      "quote": "Turnkey Jet is the turn key business aircraft solution; an all inclusive short term lease that includes aircraft crew maintenance and insurance, with low initial capital requirements.",
+      "supports_claim": "Confirms turnkeyjet.com is operated by an entity named 'Turnkey Jet' providing business aircraft services, consistent with FAA holder 'Turnkey Jet, Inc'. However this is only one independent source; a second independent source could not be retrieved due to repeated Firecrawl timeouts."
+    }
+  ],
+  "reasoning": "The operator's own website at turnkeyjet.com confirms an entity named 'Turnkey Jet' operating as a business aircraft solution provider, consistent with FAA holder 'Turnkey Jet, Inc' (cert P4HA). Candidate b49b5df9-3776-4c8a-977d-a5872b6a09f7 has canonical_name 'TurnKey Jet, Inc' and a perfect prior_match_score of 1, strongly suggesting it is the same legal entity. However, 6 of 7 Firecrawl scrape attempts timed out, leaving only one independent domain (turnkeyjet.com) with usable content. The two-source requirement cannot be satisfied, so the decision is ambiguous.",
+  "firecrawl_urls_fetched": [
+    "https://www.turnkeyjet.com",
+    "https://registry.faa.gov/AviationQuery/AirlineList",
+    "https://www.aviationdb.net/Aviation/Airline/P/P4HA~~.shtm",
+    "https://www.aircharter.org/operator/turnkey-jet",
+    "https://www.charterflightgroup.com/turnkey-jet",
+    "https://www.facebook.com/pages/TurnKey-Jet/460517080637139",
+    "https://av-info.faa.gov/OpSpecs/details/P4HA"
+  ],
+  "firecrawl_pages": [
+    {
+      "url": "https://www.turnkeyjet.com",
+      "content": "top of page\n\nSkip to Main Content\n\n![](https://static.wixstatic.com/media/910af7_ef540b4fd0e34e55bf8094ebaff84a23.jpg/v1/fill/w_1280,h_800,al_t,q_85,usm_0.66_1.00_0.01,enc_avif,quality_auto/910af7_ef540b4fd0e34e55bf8094ebaff84a23.jpg)\n\nTurnkey Jet is the turn key business aircraft solution; an all inclusive short term lease that includes aircraft crew maintenance and insurance, with low initial capital requirements.\n\n![](https://static.wixstatic.com/media/910af7_7bd3bf325a7a41aaa2c8acec4e0f6255.jpg/v1/fill/w_208,h_202,al_c,q_80,usm_0.66_1.00_0.01,enc_avif,quality_auto/910af7_7bd3bf325a7a41aaa2c8acec4e0f6255.jpg)\n\npress to zoom\n\n![](https://static.wixstatic.com/media/910af7_b15c27b4a50d42f5bd5aa0b9664131da.jpg/v1/fill/w_208,h_202,al_c,q_80,usm_0.66_1.00_0.01,enc_avif,quality_auto/910af7_b15c27b4a50d42f5bd5aa0b9664131da.jpg)\n\npress to zoom\n\n![](https://static.wixstatic.com/media/910af7_c3116cdce2444cda8f15eea4c021023e.jpg/v1/fill/w_208,h_202,al_c,q_80,usm_0.66_1.00_0.01,enc_avif,quality_auto/910af7_c3116cdce2444cda8f15eea4c021023e.jpg)\n\npress to zoom\n\n![](https://static.wixstatic.com/media/910af7_1bfcf9af7aed4c8f9e707668ea4d55f2.jpg/v1/fill/w_208,h_202,al_c,q_80,usm_0.66_1.00_0.01,enc_avif,quality_auto/910af7_1bfcf9af7aed4c8f9e707668ea4d55f2.jpg)\n\npress to zoom\n\n##### Email\n\n[![](https://www.turnkeyjet.com/quality_auto/b2c0a7_5b296797548145abac2c1934afe97ac8.png)](mailto:paul@turnkeyjet.com?subject=Request%20information%20on%20Turn%20Key%20Jet)\n\n##### Give Us\n\n##### A Call\n\n###### **(561) 319-3928**\n\n![](https://www.turnkeyjet.com/quality_auto/b2c0a7_fdb9e435bc93411b8a685dee2e12e0f7.png)\n\n##### Follow\n\n##### Us On\n\n###### [​Facebook](http://www.facebook.com/wix)\n\n[![](https://www.turnkeyjet.com/quality_auto/b2c0a7_cbc4ecd907e04d7ba5d1df82ea108995.png)](https://www.facebook.com/pages/TurnKey-Jet/460517080637139)\n\nbottom of page",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    }
+  ],
+  "additional_evidence_needed": "A second independently published source (e.g., an aviation aggregator, news article, FAA OPSS public record, or state business registry filing) naming 'Turnkey Jet, Inc' and ideally referencing cert designator P4HA or its state of incorporation. All second-source scrape attempts timed out. Candidate b49b5df9-3776-4c8a-977d-a5872b6a09f7 (canonical_name: TurnKey Jet, Inc, prior_match_score: 1) is the closest match and would almost certainly be confirmed as a match with a working second source.",
+  "cost_estimate_usd": 0.04
+}

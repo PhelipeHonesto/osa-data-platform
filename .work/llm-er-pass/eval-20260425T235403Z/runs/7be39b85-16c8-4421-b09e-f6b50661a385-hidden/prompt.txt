@@ -1,0 +1,141 @@
+You are doing entity resolution for a canonical aviation operators database.
+
+INPUT — operator name from FAA Part 135 records:
+  HOLDER NAME (verbatim): ACE AVIATION SERVICES CORPORATION
+  HOLDER NAME (normalized): ACE AVIATION SERVICES CORPORATION
+  CERT DESIGNATOR: V6NA
+  CERT VALID WINDOW: 2023-01-25 to current
+  DBA (if any): none
+
+CANDIDATE CANONICAL OPERATORS (top-K from prior matcher pass, in score order):
+  [1] operator_id: 4c0ddf5f-a30d-4d47-9d96-27b591f784bf
+      canonical_name: ACE TRANSPORT SERVICE INC
+      aliases: none
+      headquarters_icao: unknown
+      operator_type: unknown
+      icao_callsign: none
+      prior_match_score: 0.8625243741765481
+      prior_match_signals: {"nameSim":0.8625243741765481}
+
+  [2] operator_id: 411f5b4c-2aaf-41a8-a93f-c00cf10b9626
+      canonical_name: ADVANCED PLACEMENT AVIATION LLC
+      aliases: none
+      headquarters_icao: unknown
+      operator_type: unknown
+      icao_callsign: none
+      prior_match_score: 0.6557510589768655
+      prior_match_signals: {"nameSim":0.6557510589768655}
+
+  [3] operator_id: ca1119d0-09ef-4a38-b204-e97a0814f290
+      canonical_name: SZABO AEROSPACE LLC
+      aliases: none
+      headquarters_icao: unknown
+      operator_type: unknown
+      icao_callsign: none
+      prior_match_score: 0.6257841573631048
+      prior_match_signals: {"nameSim":0.6257841573631048}
+
+  [4] operator_id: 2100aa39-c8d2-490f-8303-620214a74c02
+      canonical_name: GRACE ON WINGS, INC.
+      aliases: none
+      headquarters_icao: unknown
+      operator_type: unknown
+      icao_callsign: none
+      prior_match_score: 0.5533189033189033
+      prior_match_signals: {"nameSim":0.5533189033189033}
+
+  [5] operator_id: bbbb3110-528d-457e-8ae2-c699c61545c8
+      canonical_name: Treasure State Aerospace, LLC
+      aliases: none
+      headquarters_icao: unknown
+      operator_type: unknown
+      icao_callsign: none
+      prior_match_score: 0.3654525551077275
+      prior_match_signals: {"nameSim":0.3654525551077275}
+
+YOUR TASK
+1. Use the Firecrawl MCP tool (mcp__firecrawl__firecrawl_scrape) to scrape AT LEAST
+   TWO INDEPENDENTLY PUBLISHED sources about "ACE AVIATION SERVICES CORPORATION". Independence
+   means different publishers (an operator's own website + Wikipedia = two; two
+   different aviation news outlets = two; the same outlet's two articles = ONE).
+   Required scrape order (try each, stop at 2+ independent sources, max 8 total scrapes):
+     a. Operator's own website (try https://www.{normalized_lowercase}.com if no other URL)
+     b. Wikipedia (en.wikipedia.org/wiki/{name})
+     c. AINonline OR AvWeb OR Aviation Week OR Business Jet Traveler search
+     d. SEC EDGAR if the holder name suggests a public company
+     e. State Secretary of State business search if the LLC suffix suggests a state
+     f. Aggregator search for "{holder_name} acquisition" / "rebrand" / "merger"
+
+2. Decide ONE of:
+   (a) MATCH — which numbered candidate (1..K) is the same legal/commercial entity
+       as the FAA holder name?
+   (b) NEW_ENTITY — the holder is genuinely distinct from all candidates.
+   (c) AMBIGUOUS — evidence is insufficient to choose.
+
+3. For (a) or (b), provide:
+   - VERBATIM QUOTE from the Firecrawl results that supports your decision
+     (mandatory; minimum one quote per claim)
+   - URL of the source(s) cited (each URL must appear in the actual scraped pages
+     you fetched in step 1 — no inferred or constructed URLs)
+   - REASONING CHAIN (2-4 sentences)
+   - CONFIDENCE 0.0-1.0 (your subjective; we cap at 0.85 regardless)
+
+4. For (c), explain:
+   - What additional evidence would resolve the ambiguity
+   - Which candidate is closest if forced to choose, and why it's not strong enough
+
+OUTPUT FORMAT — RETURN VALID JSON, NO COMMENTARY OUTSIDE THE JSON. The JSON object
+MUST conform exactly to this shape (the orchestrating script parses it directly):
+{
+  "decision": "match" | "new_entity" | "ambiguous" | "error",
+  "decision_target_operator_id": "<uuid>" | null,
+  "decision_subtype": "exact_alias" | "subsidiary_of_canonical" | "rebrand_to_canonical"
+                    | "distinct_legal_entity" | "distinct_brand" | null,
+  "confidence": 0.0..1.0,
+  "verbatim_quotes": [
+    {
+      "url": "https://...",
+      "quote": "exact text from the page",
+      "supports_claim": "what this quote proves"
+    }
+  ],
+  "reasoning": "2-4 sentences",
+  "firecrawl_urls_fetched": ["url1", "url2", ...],
+  "firecrawl_pages": [
+    {"url": "https://...", "content": "full scraped markdown content", "fetched_at": "2026-..."}
+  ],
+  "additional_evidence_needed": "..." | null,
+  "cost_estimate_usd": 0.04
+}
+
+ANTI-HALLUCINATION RULES (violations cause the orchestrator to mark this run failed):
+- Every URL in "verbatim_quotes" MUST exactly match a URL in "firecrawl_urls_fetched".
+- Each quote MUST be a byte-exact substring of the scraped markdown content. Do NOT
+  strip whitespace, NOT remove markdown formatting (===, ##, **, ---, etc.), NOT
+  trim newlines, NOT replace special characters. Copy bytes verbatim from the
+  Firecrawl markdown response into the quote string. The driver validates with
+  String.includes (substring match), not regex — there is no fuzziness.
+- "firecrawl_pages" MUST include the actual scraped markdown content for each cited
+  URL, so the driver can verify your quotes substring-match. Truncate each page to
+  <30000 chars (keep the first 30000). The "url" field in firecrawl_pages MUST
+  exactly equal the URL passed to firecrawl_scrape.
+- For decision='match' or 'new_entity', citations must come from at least 2 DISTINCT
+  domains (hostnames). Two pages from the same hostname count as 1 source.
+- verbatim_quotes MUST contain AT LEAST ONE quote from EACH hostname you are using
+  to support your decision. If you scraped 2 supporting domains, you need at least
+  2 quotes (one per domain). Three quotes all from domain A and zero from domain B
+  fails the Two-Source check, even if domain B is in firecrawl_urls_fetched.
+- If you cannot find ≥2 independent sources, return decision='ambiguous' with
+  "additional_evidence_needed" filled. Do not fabricate.
+- If Firecrawl returns errors or empty content for all attempts, return
+  decision='error' with the error in "reasoning".
+- Do NOT use prior knowledge (training data) as the sole basis for any claim.
+  Every claim must trace to a Firecrawl-fetched quote.
+
+JSON ENCODING RULE: the response you produce MUST be syntactically valid JSON.
+Markdown content in firecrawl_pages and verbatim_quotes contains literal " chars,
+backslashes, and newlines. These MUST be JSON-escaped: " -> \", \ -> \\,
+newline -> \n, tab -> \t. The orchestrator runs JSON.parse on your output; any
+unescaped quote in any string value will fail with "Expecting , delimiter" and
+cause the run to be marked failed. Use JSON.stringify semantics when constructing
+the response — do not hand-write JSON.

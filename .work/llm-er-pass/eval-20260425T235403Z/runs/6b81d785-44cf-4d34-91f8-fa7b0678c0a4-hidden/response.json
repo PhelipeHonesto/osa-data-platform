@@ -1,0 +1,53 @@
+{
+  "decision": "new_entity",
+  "decision_target_operator_id": null,
+  "decision_subtype": "distinct_legal_entity",
+  "confidence": 0.85,
+  "verbatim_quotes": [
+    {
+      "url": "https://www.shorelineaviation.net/fly-with-us/",
+      "quote": "Shoreline Aviation has held its FAA Part 135 Air Charter Certificate since 1982. We've built our company – and our reputation – by earning the trust of our customers, one flight at a time, again and again.",
+      "supports_claim": "Confirms Shoreline Aviation Inc is an active FAA Part 135 certificate holder headquartered at Marshfield Municipal Airport (KGHG), Massachusetts — a distinct operating entity from the defunct Connecticut seaplane company"
+    },
+    {
+      "url": "https://d37bgjny9g6ghe.cloudfront.net/operators/shoreline-aviation/Shoreline%20Aviation%20-%20T_C.pdf",
+      "quote": "Aircraft managed by Shoreline Aviation, Inc under FAA Part 135 Air Carrier Certificate # FRIA997D.",
+      "supports_claim": "Confirms the exact FAA cert designator prefix FRIA matches the prompt's cert designator FRIA, and ties it to Shoreline Aviation Inc as the legal certificate holder"
+    },
+    {
+      "url": "https://www.shorelineaviation.net/fly-with-us/",
+      "quote": "Headquartered just few minutes southeast of Boston, our versatile fleet of jet and turboprop aircraft is standing by to serve your needs.",
+      "supports_claim": "Places this Shoreline Aviation Inc in Massachusetts (near Boston/Marshfield), distinguishing it from the now-defunct New Haven, CT seaplane operator"
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Shoreline_Aviation",
+      "quote": "Shoreline ceased operations on April 1, 2020. Cape Air bought most of the assets, then promptly liquidated personal and aircraft, deciding to no longer pursue seaplanes or the New York to Boston route.",
+      "supports_claim": "The Wikipedia Shoreline Aviation (Connecticut seaplane company, AOC FVAA052E) ceased operations in 2020 and is a completely different entity; the FAA holder with cert FRIA valid from 2023 is the Massachusetts operator"
+    }
+  ],
+  "reasoning": "The FAA holder 'Shoreline Aviation Inc' with cert designator FRIA (full cert # FRIA997D, valid from 2023-01-25) is the Marshfield, MA-based Part 135 charter operator at KGHG that has held its certificate since 1982. This is distinct from the Connecticut-based seaplane company (Wikipedia, AOC FVAA052E) that ceased operations April 1, 2020. No candidate operators were provided in the matcher pass, so this entity must be entered as a new canonical operator. The operator's own website (shorelineaviation.net) and their charter agreement PDF (confirming cert # FRIA997D) provide independent corroboration of the legal entity name and active certificate status.",
+  "firecrawl_urls_fetched": [
+    "https://en.wikipedia.org/wiki/Shoreline_Aviation",
+    "https://www.shorelineaviation.net/fly-with-us/",
+    "https://d37bgjny9g6ghe.cloudfront.net/operators/shoreline-aviation/Shoreline%20Aviation%20-%20T_C.pdf"
+  ],
+  "firecrawl_pages": [
+    {
+      "url": "https://en.wikipedia.org/wiki/Shoreline_Aviation",
+      "content": "Shoreline Aviation\n==================\n\n**Shoreline Aviation** was a Part 135 charter air carrier based at the Tweed New Haven Airport in New Haven, Connecticut. It operated a fleet of ten Cessna 208 Caravan turboprop seaplanes. Shoreline operated on-demand air charter year-round in the northeast with a seasonal shift of resources to South Florida, the Bahamas, and the Caribbean in the winter.\n\nFounded1980; 46 years ago (1980)Ceased operationsApril 1, 2020; 6 years ago (2020-04-01)AOC # FVAA052EHubs Tweed New Haven AirportFleet size10Destinations10 + CharterHeadquartersNew Haven, CTEmployees35Website http://shorelineaviation.com/\n\nHistory\n-------\n\nShoreline Aviation, Inc. was founded in April 1980 by John Kelly and began operations at the former Griswold Airport in Madison, Connecticut. In 1981 the company began operating their first seaplanes. In 1987 Shoreline Aviation became the first commercial operator of the Cessna Caravan Amphibian.\n\nShoreline Aviation was one of the first to enter and establish the market for a seaplane connection between lower Manhattan and the Hamptons. Shoreline has been called \"The daddy of all seaplane companies\" by the New York Business Journal.\n\nShoreline ceased operations on April 1, 2020. Cape Air bought most of the assets, then promptly liquidated personal and aircraft, deciding to no longer pursue seaplanes or the New York to Boston route. Former Shoreline employees and investors then purchased Fly the Whale to continue operations, and now operate out of Shoreline's hangar and facilities.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://www.shorelineaviation.net/fly-with-us/",
+      "content": "Fly With Us\n===========\n\nWe're passionate about serving the unique needs of each customer.\n\nHeadquartered just few minutes southeast of Boston, our versatile fleet of jet and turboprop aircraft is standing by to serve your needs. Our knowledgeable, friendly staff and professional crews will ensure the best flight experience, every time you fly.\n\nSince 1981, we've built our reputation on providing incomparable customer service and ensuring every flight detail is executed to the highest standards - without compromise.\n\nWhy fly with Shoreline?\n\nWhether you are making a quick jaunt to the islands or you are flying to an international destination, we can help select the right aircraft for your mission. In addition to our headquarters at Marshfield Municipal Airport (KGHG) in Marshfield, MA Shoreline has an office at Palm Beach International Airport (KPBI) in Florida. Shoreline also provides aircraft acquisition, management, and maintenance services to a wide range of clients.\n\nOUR TEAM HAS FOUR DECADES OF EXPERIENCE:\n\nShoreline Aviation has held its FAA Part 135 Air Charter Certificate since 1982. We've built our company – and our reputation – by earning the trust of our customers, one flight at a time, again and again.\n\nOUTSTANDING SAFETY RECORD, ARG/US and WYVERN APPROVED:\n\nWe operate and maintain each and every aircraft to the highest safety standards. Our team is highly experienced, trained to exacting standards, and operates in compliance with our approved SMS program. We are proud of our incident-free safety record since the issuance of our Charter Certificate in 1982.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://d37bgjny9g6ghe.cloudfront.net/operators/shoreline-aviation/Shoreline%20Aviation%20-%20T_C.pdf",
+      "content": "Shoreline Aviation Inc CHARTER AGREEMENT - CHARTER OPERATOR / BROKER Booking Instructions: Flights are not confirmed until Shoreline Aviation, Inc. receives payment and completed paperwork. Definitions: The two parties to this agreement are the \"Customer\", the person or entity requesting the air charter service and Shoreline Aviation, Inc. \"Shoreline\" (Cert # FRIA997D), the Company operating or arranging the service. Quote Conditions: Quotes are subject to availability and aircraft will be reserved in the order that executed agreements are returned to and confirmed by Shoreline Aviation. Operational Control: Aircraft managed by Shoreline Aviation, Inc under FAA Part 135 Air Carrier Certificate # FRIA997D. Contracted aircraft are operated under their respective FAA Part 135 Air Carrier Certificates, in which case the Customer shall hold harmless and shall indemnify Shoreline Aviation, Inc. against any and all losses. The Customer acknowledges that Shoreline Aviation flight crews shall be in command of the aircraft at all times while completing the Customer itinerary. Shoreline Aviation flight crews are required to comply with 14 CFR 135 and shall be authorized to make any decision to comply with all applicable regulations including but not limited to discontinuing the flight for safety reasons, changing itinerary destinations for reasons of safety, as well as delaying or cancelling a departure for reasons of compliance with regulations or safety.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    }
+  ],
+  "additional_evidence_needed": null,
+  "cost_estimate_usd": 0.04
+}

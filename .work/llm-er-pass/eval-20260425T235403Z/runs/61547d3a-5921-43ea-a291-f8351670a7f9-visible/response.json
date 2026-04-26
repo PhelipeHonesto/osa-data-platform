@@ -1,0 +1,66 @@
+{
+  "decision": "new_entity",
+  "decision_target_operator_id": null,
+  "decision_subtype": "distinct_legal_entity",
+  "confidence": 0.92,
+  "verbatim_quotes": [
+    {
+      "url": "https://v-1x.com/operators/executive-flight-management-il",
+      "quote": "Executive Flight Management is a FAR Part 135 certificated air operator based in Sugar Grove, Il. Certificate: TCHA898I.",
+      "supports_claim": "Confirms Executive Flight Management holds FAA Part 135 certificate TCHA898I (matching input cert designator prefix TCHA), based in Sugar Grove, IL — a small regional operator distinct from all candidates"
+    },
+    {
+      "url": "https://acejet.com/operators/executive-flight-management/",
+      "quote": "Executive Flight Management is a FAA Part 135 certified charter operator with a fleet of 1 aircraft including 1 light. The fleet has an average age of 49.0 years, with the newest aircraft manufactured in 1977. 1 of 1 aircraft hold valid FAA registrations (100%).",
+      "supports_claim": "Second independent source confirms Executive Flight Management is a distinct small Part 135 operator (single 1977-vintage light aircraft), not matching any candidate — in particular not candidate [1] Executive Jet Management which is a large fractional/charter company with ICAO callsign EJM"
+    },
+    {
+      "url": "https://www.businessairnews.com/hb_charterpage.html?recnum=149490",
+      "quote": "AOC/Part 135: TCHA898I",
+      "supports_claim": "Third independent source (Business Air News) confirms the cert number TCHA898I for Executive Flight Management, U.S.A., corroborating the FAA input cert designator TCHA"
+    }
+  ],
+  "reasoning": "Executive Flight Management is a small FAA Part 135 charter operator based in Sugar Grove, Illinois, holding certificate TCHA898I (matching the input cert designator TCHA). Multiple independent sources confirm it operates a single light aircraft (Baron 58P, 1977 vintage) with FAA oversight under the Greater Chicago FSDO. None of the five candidates match: candidate [1] 'Executive Jet Management' (callsign EJM) is a large, nationally known fractional/charter management company entirely distinct in scale, geography, and legal identity; candidates [2]–[5] have low name-similarity scores and no geographic or operational overlap. Executive Flight Management/Trans American Charter, Ltd. is therefore a new canonical entity.",
+  "firecrawl_urls_fetched": [
+    "https://www.executiveflightmgmt.com/",
+    "https://en.wikipedia.org/wiki/Executive_Flight_Management",
+    "https://v-1x.com/operators/executive-flight-management-il",
+    "https://acejet.com/operators/executive-flight-management/",
+    "https://www.businessairnews.com/hb_charterpage.html?recnum=149490",
+    "https://www.linkedin.com/company/executive-flight-management-charter"
+  ],
+  "firecrawl_pages": [
+    {
+      "url": "https://www.executiveflightmgmt.com/",
+      "content": "Welcome To Executive Flight Management\n======================================\n\nFor every available aircraft there is a complex matrix of operating scenarios. Our aviation architecture begins with experience and demonstrated performance for over 38 years. Our highly specialized and vertically integrated company provides individual solutions for each customer.\n\nWe are a diverse aircraft management, charter, maintenance and aviation resource. Our credentials include Federal Aviation Regulation 91, 135, 125, 121 and 145 for business and transport aircraft operations. We offer specific expertise on Boeing, Gulfstream, Bombardier, Dassault, Cessna, Raytheon and Embraer ranging from turboprops to light, medium, heavy and transport jet aircraft.\n\nCombining your goals with our approach is the innovative synergy where you fly on the leading edge. Your advantage begins with our desire to listen. Our team of mechanics, pilots, customer service representatives and administrative support staff average more than ten years with this company. We answer all technical questions in understandable common sense.\n\nWe invite you to explore every aspect of business aviation. Please tour our website. Discover Executive Flight Management/Trans American Charter, Ltd., is the answer to your first question.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Executive_Flight_Management",
+      "content": "Wikipedia does not have an article with this exact name. Please search for Executive Flight Management in Wikipedia to check for alternative titles or spellings.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://v-1x.com/operators/executive-flight-management-il",
+      "content": "Executive Flight Management\n===========================\n\nSugar Grove, IlPart 135\n\nCharter / Air Taxi / Commuter\n\nExecutive Flight Management is a FAR Part 135 certificated air operator based in Sugar Grove, Il. Certificate: TCHA898I.\n\n### FAA Certificate\n\nCertificate Number\n\nTCHA898I\n\nFAR Part\n\nPart 135\n\nCertificate Issued\n\nMay 28, 1986\n\n### Key Personnel\n\nCEO\n\nFrancis, Lincoln\n\nDirector of Operations\n\nMchugh, John F.\n\nChief Pilot\n\nFrancis, Lincoln\n\nDirector of Maintenance\n\nTuck, Robert G. Iii\n\n### Location\n\n43w752 Route 30, Suite 2d\n\nSugar Grove, Il\n\n60554\n\n### About Executive Flight Management\n\nExecutive Flight Management is an FAA-certificated charter / air taxi / commuter operator based in Sugar Grove, IL. The company has held its FAA operating certificate for over 39 years, having been first certificated in 1986. Key personnel include CEO Francis, Lincoln, Director of Operations Mchugh, John F., Chief Pilot Francis, Lincoln.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://acejet.com/operators/executive-flight-management/",
+      "content": "Executive Flight Management\n===========================\n\nFAA Part 135 Charter Operator · 1 aircraft\n\nAbout Executive Flight Management\n---------------------------------\n\nExecutive Flight Management is a FAA Part 135 certified charter operator with a fleet of 1 aircraft including 1 light. The fleet has an average age of 49.0 years, with the newest aircraft manufactured in 1977. 1 of 1 aircraft hold valid FAA registrations (100%). The operator has a clean NTSB safety record with no reported incidents.\n\nFleet Statistics\n----------------\n\nAvg Fleet Age 49.0 years\n\nNewest Aircraft 1977\n\nOldest Aircraft 1977\n\nValid Registrations 1\n\n### Fleet Composition\n\nLight\n\n1 (100%)\n\nSafety & Compliance\n-------------------\n\nPublic records from the FAA and NTSB for aircraft currently on this operator's Part 135 certificate.\n\n0 NTSB Records\n\n100% Registrations Valid\n\nFleet Registration Health 1 of 1 aircraft have valid FAA registrations\n\nOversight Office GL03 - Greater Chicago (CHI) (FAA Flight Standards District Office)\n\nEarliest Airworthiness Cert 2024\n\nFleet Overview\n--------------\n\n1 Baron 58P\n\nFleet (1 aircraft)\n------------------\n\n| Tail Number | Type | Category | Year |\n| --- | --- | --- | --- |\n| N18280 | Baron 58P | Light | 1977 |",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://www.businessairnews.com/hb_charterpage.html?recnum=149490",
+      "content": "Charter Operator\n\nExecutive Flight Management   (U.S.A.)\n\nCharter bases and aircraft\n\n| Concord (Buchanan Field) | 1 x Beechcraft 58P (Beechcraft Twin Piston) - Passenger (5 pax) |\n\nCertification\n\n* AOC/Part 135: TCHA898I\n* Wyvern Certified: No\n* ARGUS Rating: No\n* ACSF IAS: No\n* IS-BAO: No\n\nCompany data\n\n* Telephone:   +1 630 466 2010\n* Fax:   +1 630 466 2018\n* Email:   info@efmtac.com\n* Web:   www.efmtac.com",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://www.linkedin.com/company/executive-flight-management-charter",
+      "content": "Executive Flight Management/Trans American Charter Ltd.\n=======================================================\n\nAirlines and Aviation\n\nSugar Grove, Illinois 213 followers\n\nSafety-Service-Quality-Trust\n\nAbout us\n--------\n\nWelcome To Executive Flight Management! For every available aircraft there is a complex matrix of operating scenarios. Our aviation architecture begins with experience and demonstrated performance for over 36 years. Our highly specialized and vertically integrated company provides individual solutions for each customer. We are a diverse aircraft management, charter, maintenance and aviation resource. Our credentials include Federal Aviation Regulation 91, 135, 125, 121 and 145 for business and transport aircraft operations.\n\nWebsite: https://www.executiveflightmgmt.com/\n\nIndustry: Airlines and Aviation\n\nHeadquarters: Sugar Grove, Illinois\n\nType: Privately Held\n\nFounded: 1985",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    }
+  ],
+  "additional_evidence_needed": null,
+  "cost_estimate_usd": 0.04
+}

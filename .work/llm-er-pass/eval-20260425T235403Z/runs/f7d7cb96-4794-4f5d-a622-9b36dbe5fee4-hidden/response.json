@@ -1,0 +1,59 @@
+{
+  "decision": "new_entity",
+  "decision_target_operator_id": null,
+  "decision_subtype": "distinct_legal_entity",
+  "confidence": 0.85,
+  "verbatim_quotes": [
+    {
+      "url": "https://www.aerospaceexchange.com/aircraft-operator/executive/keystone-aviation-llc/",
+      "quote": "KEYSTONE AVIATION LLC  \n303 NORTH 2370 W., SALT LAKE CITY, UT United States 84116  \nNorth America  \nPhone: 801-933-7570, 888-600-1070  \nFax: 801-933-7578",
+      "supports_claim": "Confirms the legal entity name 'KEYSTONE AVIATION LLC', its physical address in Salt Lake City, UT, and contact details — consistent with the FAA Part 135 holder record."
+    },
+    {
+      "url": "https://www.aerospaceexchange.com/aircraft-operator/executive/keystone-aviation-llc/",
+      "quote": "Established: 1995  \nFleet: 10  \nPilots: 20 full time,5 part time  \nCertificate: B8MA127H",
+      "supports_claim": "Certificate designator B8MA127H matches the FAA cert designator prefix B8MA in the input record, confirming this is the same certificated operator."
+    },
+    {
+      "url": "https://www.aerospacepurchasing.com/aircraft-operator/executive/keystone-aviation-llc/",
+      "quote": "KEYSTONE AVIATION LLC  \n303 NORTH 2370 W., SALT LAKE CITY, UT United States 84116  \nNorth America  \nPhone: 801-933-7570, 888-600-1070  \nFax: 801-933-7578",
+      "supports_claim": "Independent source corroborates the same legal name, address, and contact info, establishing that Keystone Aviation LLC is a distinct entity based in Salt Lake City, UT."
+    },
+    {
+      "url": "https://www.aerospacepurchasing.com/aircraft-operator/executive/keystone-aviation-llc/",
+      "quote": "Established: 1995  \nFleet: 10  \nPilots: 20 full time,5 part time  \nCertificate: B8MA127H",
+      "supports_claim": "Second independent source confirms certificate B8MA127H, fleet size 10, and operational profile consistent with a mid-size Part 135 operator."
+    }
+  ],
+  "reasoning": "The candidate list provided is empty — no existing canonical operators were presented for matching. Two independently published aviation aggregator sources (aerospaceexchange.com and aerospacepurchasing.com) confirm that 'KEYSTONE AVIATION LLC' is a distinct Part 135 operator located at 303 North 2370 W., Salt Lake City, UT 84116, established in 1995, with FAA certificate B8MA127H — a direct prefix match to the FAA record designator B8MA. The operator's own website (keystoneaviation.com) is defunct ('THIS WEBPAGE IS NO LONGER IN USE'), consistent with the certificate valid window ending 2024-11-27, suggesting the operator has wound down. With no candidates to match against and two corroborating sources confirming the entity's identity, this is a new entity record.",
+  "firecrawl_urls_fetched": [
+    "https://www.keystoneaviation.com",
+    "https://en.wikipedia.org/wiki/Keystone_Aviation",
+    "https://www.aerospaceexchange.com/aircraft-operator/executive/keystone-aviation-llc/",
+    "https://www.aerospacepurchasing.com/aircraft-operator/executive/keystone-aviation-llc/"
+  ],
+  "firecrawl_pages": [
+    {
+      "url": "https://www.keystoneaviation.com",
+      "content": "[Skip to content](https://www.keystoneaviation.com/#content \"Skip to content\")\n\nTHIS WEBPAGE IS NO LONGER IN USE.\n---------------------------------\n\nScroll to Top",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Keystone_Aviation",
+      "content": "[](https://en.wikipedia.org/wiki/Keystone_Aviation#)\n\nKeystone Aviation\n=================\n\n**Wikipedia does not have an article with this exact name.** Please [search for _Keystone Aviation_ in Wikipedia](https://en.wikipedia.org/w/index.php?search=Keystone+Aviation&title=Special%3ASearch&fulltext=1)\n to check for alternative titles or spellings.",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://www.aerospaceexchange.com/aircraft-operator/executive/keystone-aviation-llc/",
+      "content": "[Home](https://www.aerospaceexchange.com/)\n   /   [Aircraft Operator](https://www.aerospaceexchange.com/aircraft-operator/)    /   [Executive](https://www.aerospaceexchange.com/aircraft-operator/executive/)    /   Keystone Aviation Llc\n\nKeystone Aviation Llc Information\n=================================\n\n### Primary Contact Information\n\nKEYSTONE AVIATION LLC  \n303 NORTH 2370 W., SALT LAKE CITY, UT United States 84116  \nNorth America  \nPhone: 801-933-7570, 888-600-1070  \nFax: 801-933-7578  \n\n### Qualifications\n\nEstablished: 1995  \nFleet: 10  \nPilots: 20 full time,5 part time  \nCertificate: B8MA127H  \nLicenced: (Licensed to fly WORLDWIDE)",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://www.aerospacepurchasing.com/aircraft-operator/executive/keystone-aviation-llc/",
+      "content": "[Home](https://www.aerospacepurchasing.com/)\n   /   [Aircraft Operator](https://www.aerospacepurchasing.com/aircraft-operator/)    /   [Executive](https://www.aerospacepurchasing.com/aircraft-operator/executive/)    /   Keystone Aviation Llc\n\nKeystone Aviation Llc Details\n=============================\n\n### Primary Contact Information\n\nKEYSTONE AVIATION LLC  \n303 NORTH 2370 W., SALT LAKE CITY, UT United States 84116  \nNorth America  \nPhone: 801-933-7570, 888-600-1070  \nFax: 801-933-7578  \n\n### Qualifications\n\nEstablished: 1995  \nFleet: 10  \nPilots: 20 full time,5 part time  \nCertificate: B8MA127H  \nLicenced: (Licensed to fly WORLDWIDE)",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    }
+  ],
+  "additional_evidence_needed": null,
+  "cost_estimate_usd": 0.04
+}

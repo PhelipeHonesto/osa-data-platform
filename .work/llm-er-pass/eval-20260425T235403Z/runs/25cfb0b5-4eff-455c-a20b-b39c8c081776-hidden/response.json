@@ -1,0 +1,37 @@
+{
+  "decision": "new_entity",
+  "decision_target_operator_id": null,
+  "decision_subtype": "distinct_legal_entity",
+  "confidence": 0.85,
+  "verbatim_quotes": [
+    {
+      "url": "https://www.nextair135.com/",
+      "quote": "nextair, LLC Part 135 charter operator. \n\nCertificate number 16AA979L\n\n2502 Clark Carr Loop, SE Hangar A2 Suite 1, Albuquerque, New Mexico 87106",
+      "supports_claim": "Confirms the FAA holder 'nextair, LLC' with cert designator prefix 16AA is a distinct small charter operator based in Albuquerque, NM — not present in any existing canonical candidate."
+    },
+    {
+      "url": "https://www.nextair135.com/",
+      "quote": "Exclusive Marketing Agent: \n\nOnward Jets, LLC \n\nContact us at: (619) 821 92 82\n\n[www.onwardjets.com](http://www.onwardjets.com/)",
+      "supports_claim": "Shows nextair, LLC is a distinct legal entity that markets through a separate company (Onward Jets, LLC), confirming it is an independent operator not affiliated with any candidate in the database."
+    }
+  ],
+  "reasoning": "The FAA holder 'nextair, LLC' (cert 16AA) is confirmed by its own website as a small Part 135 charter operator at 2502 Clark Carr Loop SE, Albuquerque, NM 87106, with certificate number 16AA979L and Onward Jets, LLC as its exclusive marketing agent. The candidate list is empty — no prior canonical operators were proposed as potential matches. There is no evidence of any merger, rebrand, or subsidiary relationship with any existing canonical operator. This operator should be inserted as a new canonical entity.",
+  "firecrawl_urls_fetched": [
+    "https://www.nextair135.com/",
+    "https://www.onwardjets.com/"
+  ],
+  "firecrawl_pages": [
+    {
+      "url": "https://www.nextair135.com/",
+      "content": "top of page\n\n![Screenshot 2024-06-11 at 12.29.30 AM.png](https://www.nextair135.com/quality_auto/1b7127_1af13c4f1bcc408fa5b018b154ed6e77~mv2.png)\n\n[Get a Quote](http://onwardjets.com/)\n\nnextair, LLC Part 135 charter operator. \n\nCertificate number 16AA979L\n\n2502 Clark Carr Loop, SE Hangar A2 Suite 1, Albuquerque, New Mexico 87106\n\nExclusive Marketing Agent: \n\nOnward Jets, LLC \n\nContact us at: (619) 821 92 82\n\n[www.onwardjets.com](http://www.onwardjets.com/)\n\nbottom of page",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://www.onwardjets.com/",
+      "content": "top of page\n\n![](https://static.wixstatic.com/media/f6d271_55c83f2c62e442c1b29c01b5780406db~mv2.jpg/v1/fill/w_147,h_83,al_c,q_80,usm_0.66_1.00_0.01,blur_2,enc_avif,quality_auto/f6d271_55c83f2c62e442c1b29c01b5780406db~mv2.jpg)\n\n01\n==\n\nYour life moves forward  \nour jets are ready\n============================================\n\nFASTER, HIGHER, SMARTER\n\nWe offer world-class private air charter services to individuals, families, and businesses looking for a safe, easy, and cost-effective way to reach their next destination.\n\n​\n\nNo wonder why our customers think that flying with us is the smart way to fly private.\n\nIt's about the journey\n----------------------\n\n![](https://www.onwardjets.com/quality_auto/f6d271_f806b8ef7f504b0e875aa6c3ec9235d2~mv2.png)\n\n![Back 2.png](https://static.wixstatic.com/media/f6d271_fb8cb16879c44abbb3fb3f94bf9f6119~mv2.png/v1/fill/w_62,h_28,al_c,q_85,usm_0.66_1.00_0.01,blur_2,enc_avif,quality_auto/f6d271_fb8cb16879c44abbb3fb3f94bf9f6119~mv2.png)\n\nThe world at your fingertips\n============================\n\nWhether you fly on one of our Phenom 100's from southern California to Las Vegas, take a business trip upstate, or want to take the entire family overseas, we have an available option for you.\n\nBook your next trip\n\n### Your safety, our priority\n\nAt Onward Jets safety is our top priority, our airplanes are thoroughly inspected by our crews before and after every flight, and maintained by a factory-approved service center. We rely on technology to monitor and stay ahead of bad weather to make your trip safe and comfortable.\n\nWe provide ongoing training for our pilots at the top-rated training facilities in the country.\n\n​\n\nOnward Jets is a proud Argus Gold rated charter operator which means we have achieved the highest level of quality in aviation as we have adhered to the highest international standards in the industry.\n\n![Phenom 100_6.png](https://www.onwardjets.com/quality_auto/Phenom%20100_6.png)\n\n![Phenom 100_2.jpeg](https://static.wixstatic.com/media/f6d271_9e785f261287414c9a2f2191beb2aaf9~mv2.jpeg/v1/fill/w_123,h_82,al_c,q_80,usm_0.66_1.00_0.01,blur_2,enc_avif,quality_auto/f6d271_9e785f261287414c9a2f2191beb2aaf9~mv2.jpeg)\n\n### Stay connected with us\n\nIf you need personal assistance our team is ready to help you  \nbook your next trip.\n\nJoin our mailing list\n-------------------\n\nEmail\n\nSubscribe\n\nThanks for subscribing!\n\nbottom of page",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    }
+  ],
+  "additional_evidence_needed": null,
+  "cost_estimate_usd": 0.04
+}

@@ -1,0 +1,48 @@
+{
+  "decision": "match",
+  "decision_target_operator_id": "0e5aa505-7623-4827-a722-4469a954a70f",
+  "decision_subtype": "exact_alias",
+  "confidence": 0.85,
+  "verbatim_quotes": [
+    {
+      "url": "https://www.shorelineaviation.net/fly-with-us/",
+      "quote": "Shoreline Aviation has held its FAA Part 135 Air Charter Certificate since 1982. We've built our company – and our reputation – by earning the trust of our customers, one flight at a time, again and again.",
+      "supports_claim": "Confirms the operator is named Shoreline Aviation Inc, holds a FAA Part 135 certificate, and is based near Boston — consistent with the FAA holder record."
+    },
+    {
+      "url": "https://v-1x.com/operators/shoreline-aviation-inc-ma",
+      "quote": "Shoreline Aviation Inc is a FAR Part 135 certificated air operator based in Marshfield, Ma. Certificate: FRIA997D.",
+      "supports_claim": "Confirms the legal entity name 'Shoreline Aviation Inc' exactly matches the FAA holder name, and the certificate prefix 'FRIA' matches the cert designator in the input."
+    },
+    {
+      "url": "https://acejet.com/operators/shoreline-aviation-inc/",
+      "quote": "Shoreline Aviation Inc is a FAA Part 135 certified charter operator with a fleet of 5 aircraft including 3 midsize, 1 turboprop, 1 heavy.",
+      "supports_claim": "Third independent aggregator confirms the exact legal name 'Shoreline Aviation Inc' as a Part 135 operator, corroborating the match."
+    }
+  ],
+  "reasoning": "The FAA holder name 'Shoreline Aviation Inc' is an exact match to the canonical operator name in candidate [1]. The operator's own website (shorelineaviation.net) confirms the company holds a FAA Part 135 Air Charter Certificate since 1982 and is headquartered near Boston (Marshfield Municipal Airport, KGHG). The v-1x.com registry entry explicitly lists the legal name as 'Shoreline Aviation Inc' with certificate number FRIA997D, whose 'FRIA' prefix matches the cert designator in the FAA input record. The canonical candidate was almost certainly pre-populated from the same FAA records, making this a clear exact match.",
+  "firecrawl_urls_fetched": [
+    "https://www.shorelineaviation.net/fly-with-us/",
+    "https://acejet.com/operators/shoreline-aviation-inc/",
+    "https://v-1x.com/operators/shoreline-aviation-inc-ma"
+  ],
+  "firecrawl_pages": [
+    {
+      "url": "https://www.shorelineaviation.net/fly-with-us/",
+      "content": "###### Plan now\n\nSchedule your spring trips now by calling 781.834.4928 to talk with our Charter Team!\n\n×\n\nFly With Us\n===========\n\nWe're passionate about serving the unique needs of each customer.\n-----------------------------------------------------------------\n\nHeadquartered just few minutes southeast of Boston, our versatile fleet of jet and turboprop aircraft is standing by to serve your needs. Our knowledgeable, friendly staff and professional crews will ensure the best flight experience, every time you fly.\n\nSince 1981, we've built our reputation on providing incomparable customer service and ensuring every flight detail is executed to the highest standards - without compromise.\n\n##### Why fly with Shoreline?\n\nWhether you are making a quick jaunt to the islands or you are flying to an international destination, we can help select the right aircraft for your mission. In addition to our headquarters at Marshfield Municipal Airport (KGHG) in Marshfield, MA Shoreline has an office at Palm Beach International Airport (KPBI) in Florida. Shoreline also provides aircraft acquisition, management, and maintenance services to a wide range of clients.\n\n###### OUR TEAM HAS FOUR DECADES OF EXPERIENCE:\n\nShoreline Aviation has held its FAA Part 135 Air Charter Certificate since 1982. We've built our company – and our reputation – by earning the trust of our customers, one flight at a time, again and again.\n\n###### OUTSTANDING SAFETY RECORD, ARG/US and WYVERN APPROVED:\n\nWe operate and maintain each and every aircraft to the highest safety standards. Our team is highly experienced, trained to exacting standards, and operates in compliance with our approved SMS program. We are proud of our incident-free safety record since the issuance of our Charter Certificate in 1982.\n\n###### UNRIVALED CUSTOMER CARE:\n\nWe pride ourselves on our high level of service and attention to detail. At Shoreline, you're not just an account number in a computer system. Our highly trained, professional staff is dedicated to providing incomparable customer service and ensuring that every flight detail is executed to uncompromising standards.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://acejet.com/operators/shoreline-aviation-inc/",
+      "content": "Shoreline Aviation Inc\n======================\n\nFAA Part 135 Charter Operator · 5 aircraft\n\nhttps://www.shorelineaviation.net/\n\nAbout Shoreline Aviation Inc\n----------------------------\n\nShoreline Aviation Inc is a FAA Part 135 certified charter operator with a fleet of 5 aircraft including 3 midsize, 1 turboprop, 1 heavy. The fleet has an average age of 16.0 years, with the newest aircraft manufactured in 2019. 5 of 5 aircraft hold valid FAA registrations (100%). The operator has a clean NTSB safety record with no reported incidents.\n\nFleet Statistics\n----------------\n\nAvg Fleet Age 16.0 years\n\nNewest Aircraft 2019\n\nOldest Aircraft 2002\n\nValid Registrations 5\n\nEmpty Legs (90 days) 30\n\nFleet Composition\n\nMidsize 3 (60%)\nHeavy 1 (20%)\nTurboprop 1 (20%)\n\nSafety & Compliance\n-------------------\n\nPublic records from the FAA and NTSB for aircraft currently on this operator's Part 135 certificate.\n\n0 NTSB Records\n\n100% Registrations Valid\n\nFleet Registration Health 5 of 5 aircraft have valid FAA registrations\n\nOversight Office EA61 - Boston (BOS) (FAA Flight Standards District Office)\n\nEarliest Airworthiness Cert 2017\n\nFleet Overview\n--------------\n\n2 Citation XLS+\n1 Citation Excel\n1 Falcon 2000EX EASy\n1 PC-12 NGX\n\nFleet (5 aircraft)\n------------------\n\n| Tail Number | Type | Category | Year |\n| --- | --- | --- | --- |\n| N143CG | Citation Excel | Midsize | 2002 |\n| N22NY | PC-12 NGX | Turboprop | 2010 |\n| N413DW | Citation XLS+ | Midsize | 2010 |\n| N681ZL | Falcon 2000EX EASy | Heavy | 2009 |\n| N860M | Citation XLS+ | Midsize | 2019 |",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://v-1x.com/operators/shoreline-aviation-inc-ma",
+      "content": "Shoreline Aviation Inc\n======================\n\nMarshfield, MaPart 135\n\nCharter / Air Taxi / Commuter\n\nShoreline Aviation Inc is a FAR Part 135 certificated air operator based in Marshfield, Ma. Certificate: FRIA997D.\n\nFAA Certificate\n\nCertificate Number: FRIA997D\nFAR Part: Part 135\nCertificate Issued: Aug 3, 1982\n\nKey Personnel\n\nCEO: Douglass, Keith\nDirector of Operations: Douglass, Keith\nChief Pilot: Harris, Wesley G\nDirector of Maintenance: Novak Jr., Edward J\n\nLocation\n\nMarshfield Municipal Airport, 93 Old Colony Lane\nMarshfield, Ma\n02050\n\nAbout Shoreline Aviation Inc\n\nShoreline Aviation Inc is an FAA-certificated charter / air taxi / commuter operator based in Marshfield, MA. The company has held its FAA operating certificate for over 43 years, having been first certificated in 1982. Key personnel include CEO Douglass, Keith, Director of Operations Douglass, Keith, Chief Pilot Harris, Wesley G.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    }
+  ],
+  "additional_evidence_needed": null,
+  "cost_estimate_usd": 0.04
+}

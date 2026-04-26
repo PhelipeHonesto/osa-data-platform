@@ -1,0 +1,62 @@
+{
+  "decision": "ambiguous",
+  "decision_target_operator_id": null,
+  "decision_subtype": null,
+  "confidence": 0.0,
+  "verbatim_quotes": [],
+  "reasoning": "Eight scrape attempts across distinct sources yielded no substantive content about Novus Jet Charter, LLC. The operator's own website (novusjetcharter.com) failed DNS resolution, indicating the domain does not exist or has expired. Wikipedia has no article for this entity. AINonline search returned no results matching this operator. Bizapedia and OpenCorporates both returned CAPTCHA blocks without content. FlightAware, CharterIndex, ARG.aero, and the FAA av-info API all returned 404s or service errors. Without two independent published sources confirming identity, a match or new_entity decision cannot be supported.",
+  "firecrawl_urls_fetched": [
+    "https://www.novusjetcharter.com",
+    "https://en.wikipedia.org/wiki/Novus_Jet_Charter",
+    "https://www.ainonline.com/search?q=Novus+Jet+Charter",
+    "https://www.bizapedia.com/us/novus-jet-charter-llc.html",
+    "https://opencorporates.com/companies?q=Novus+Jet+Charter&jurisdiction_code=us&utf8=%E2%9C%93&action=enter_term",
+    "https://www.charterindex.com/search/?search=novus+jet+charter",
+    "https://www.flightaware.com/about/novus-jet-charter",
+    "https://www.arg.aero/charter-broker-directory/novus-jet-charter"
+  ],
+  "firecrawl_pages": [
+    {
+      "url": "https://www.novusjetcharter.com",
+      "content": "DNS resolution failed — domain does not resolve.",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Novus_Jet_Charter",
+      "content": "Wikipedia does not have an article with this exact name. Please search for Novus Jet Charter in Wikipedia to check for alternative titles or spellings.",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://www.ainonline.com/search?q=Novus+Jet+Charter",
+      "content": "89859 search results for\n========================\n\nApril 24, 2026\n\nAccidents\n\n[### Hop-A-Jet: NTSB Final Report Is 'Accurate Assessment'](https://www.ainonline.com/aviation-news/business-aviation/2026-04-24/hop-jet-ntsb-final-report-accurate-assessment)\n\nOne element of the NTSB final report surprised Hop-A-Jet president Barry Ellis: that there were no recommendations issued by the agency.",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://www.bizapedia.com/us/novus-jet-charter-llc.html",
+      "content": "Human Verification\n------------------\n\nWe just need a quick check to confirm you're human. Please complete the drag and drop challenge below and then click the \"Verify Human\" button below to continue.",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://opencorporates.com/companies?q=Novus+Jet+Charter&jurisdiction_code=us&utf8=%E2%9C%93&action=enter_term",
+      "content": "We need to verify you are human before you can continue. Please solve this Captcha and we will get you to your requested site. Sorry for the inconvience.",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://www.charterindex.com/search/?search=novus+jet+charter",
+      "content": "Page not found\n==============\n\nWe can't find the page you're looking for. Try a new search or returning to the home page",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://www.flightaware.com/about/novus-jet-charter",
+      "content": "Page Not Found\n==============\n\nWe can't find the page that you're looking for.",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://www.arg.aero/charter-broker-directory/novus-jet-charter",
+      "content": "Page not found\n==============\n\n[Return to home page](https://www.arg.aero/)",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    }
+  ],
+  "additional_evidence_needed": "A working public web presence for Novus Jet Charter, LLC is needed — the operator domain (novusjetcharter.com) does not resolve and no aviation directory, news outlet, or business registry returned accessible content. State Secretary of State business filings (the LLC suffix implies state registration) would confirm legal identity and state of formation. A direct FAA PRIA or ARCS lookup for cert designator 6JXA would confirm the holder name and address, which could then be cross-matched to the single candidate (operator_id 3463b2ca-d313-44db-8f4c-0875e6bb5cf6). If forced to choose, candidate [1] (Novus Jet Charter, LLC) is the closest given the exact name match, but the absence of any corroborating external source prevents a confident match decision.",
+  "cost_estimate_usd": 0.10
+}

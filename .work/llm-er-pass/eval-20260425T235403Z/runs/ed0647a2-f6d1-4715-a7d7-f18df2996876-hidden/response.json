@@ -1,0 +1,82 @@
+{
+  "decision": "new_entity",
+  "decision_target_operator_id": null,
+  "decision_subtype": "distinct_legal_entity",
+  "confidence": 0.85,
+  "verbatim_quotes": [
+    {
+      "url": "https://novusjets.com/",
+      "quote": "Air Carrier Certificate #6JXA074N",
+      "supports_claim": "Operator's own website confirms cert designator 6JXA (full cert number 6JXA074N), directly matching the FAA record for Novus Jet Charter, LLC"
+    },
+    {
+      "url": "https://novusjets.com/",
+      "quote": "Copyright © 2024 Novus Jet Charter, LLC - All Rights Reserved.",
+      "supports_claim": "Confirms the legal entity name is exactly 'Novus Jet Charter, LLC', matching the FAA holder name verbatim"
+    },
+    {
+      "url": "https://acejet.com/operators/novus-jet-charter-llc/",
+      "quote": "Novus Jet Charter, LLC is a FAA Part 135 certified charter operator with a fleet of 2 aircraft including 1 midsize, 1 super midsize.",
+      "supports_claim": "Independent third-party source confirms Novus Jet Charter, LLC as a distinct FAA Part 135 operator"
+    },
+    {
+      "url": "https://www.businessairnews.com/hb_charterpage.html?recnum=168766",
+      "quote": "AOC/Part 135: 6JXA074N (Jetex, LLC)",
+      "supports_claim": "Business Air News independently confirms Part 135 certificate number 6JXA074N for Novus Jet Charter, corroborating the FAA cert designator 6JXA"
+    },
+    {
+      "url": "https://www.ch-aviation.com/news/148207-uss-novus-jet-charter-adds-first-challenger-300",
+      "quote": "Novus Jet Charter (Stuart Witham) expanded its Part 135-certified fleet in November 2024 with the addition of a first Challenger 300. The aircraft is expected to commence charter services at the beginning of January 2025, president Eric Sanchez confirmed to ch-aviation.",
+      "supports_claim": "ch-aviation independently confirms Novus Jet Charter as an active Part 135 operator with named leadership (Eric Sanchez), establishing it as a real, distinct commercial entity"
+    }
+  ],
+  "reasoning": "Novus Jet Charter, LLC is a real, active FAA Part 135 charter operator based in Boca Raton, Florida (KBCT), with cert number 6JXA074N matching the input designator 6JXA. The candidate list is empty, meaning no prior canonical operator record exists for this entity. Evidence from the operator's own website (novusjets.com), plus independent coverage from acejet.com, businessairnews.com, and ch-aviation.com, confirms the entity is a genuine, distinct charter operator with a two-aircraft fleet (Learjet 60 + Challenger 300) and named president Eric Sanchez. No mergers, rebrands, or subsidiary relationships to any other operator were found; this is a standalone LLC that should be created as a new canonical entity.",
+  "firecrawl_urls_fetched": [
+    "https://novusjets.com/",
+    "https://acejet.com/operators/novus-jet-charter-llc/",
+    "http://www.charterbroker.aero/direct_detail.html?id=168766",
+    "https://www.ch-aviation.com/news/148207-uss-novus-jet-charter-adds-first-challenger-300",
+    "https://airguide.info/novus-jet-charter-expands-fleet-with-first-challenger-300/",
+    "https://www.businessairnews.com/hb_charterpage.html?recnum=168766",
+    "https://novusjets.com/fleet"
+  ],
+  "firecrawl_pages": [
+    {
+      "url": "https://novusjets.com/",
+      "content": "[](https://novusjets.com/#)\n\n[### Novus Jet Charter\\\n\\\nNovus Jet CharterNovus Jet CharterNovus Jet Charter](https://novusjets.com/ \"Novus Jet Charter\")\n\n[Home](https://novusjets.com/)\n\n[FLEET](https://novusjets.com/fleet)\n\nYOUR EXPERIENCE IS WAITING\n==========================\n\n[1.888.652.5387](tel:18886525387)\n\nAbout Novus Jet Charter\n\nAt Novus Jet Charter, we have over 15 years of experience in Part 135 Operations and Management. Every trip is personally tailored to meet your needs from start to finish.\n\nSafety is paramount at Novus Jet Charter. We are a member of the Wyvern Flight Leader Program, rated ARGUS Gold and are proud and active members of both the Air Charter Safety Foundation and NBAA.\n\nContact Us\n\nRequest a flight or aircraft management information!\n\n#### 1.888.652.5387\n\n#### Novus Jet Charter\n\n3700 Airport Rd, Boca Raton, Florida 33431, United States\n\n[1.888.652.5387](tel:18886525387)\n [eric@novusjets.com](mailto:eric@novusjets.com)\n\nAir Carrier Certificate #6JXA074N\n\n[1.888](tel:1888)\n.NJC.JETS [1.888.652.5387](tel:18886525387)\n\nCopyright © 2024 Novus Jet Charter, LLC - All Rights Reserved.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://acejet.com/operators/novus-jet-charter-llc/",
+      "content": "Novus Jet Charter, LLC\n======================\n\nFAA Part 135 Charter Operator · 2 aircraft\n\nAbout Novus Jet Charter, LLC\n----------------------------\n\nNovus Jet Charter, LLC is a FAA Part 135 certified charter operator with a fleet of 2 aircraft including 1 midsize, 1 super midsize. The fleet has an average age of 22.5 years, with the newest aircraft manufactured in 2006. 2 of 2 aircraft hold valid FAA registrations (100%). The operator has a clean NTSB safety record with no reported incidents.\n\nFleet Statistics\n----------------\n\nAvg Fleet Age 22.5 years\n\nNewest Aircraft 2006\n\nOldest Aircraft 2001\n\nValid Registrations 2\n\nFleet Composition\n\nMidsize 1 (50%)\nSuper Midsize 1 (50%)\n\nSafety & Compliance\n-------------------\n\nPublic records from the FAA and NTSB for aircraft currently on this operator's Part 135 certificate.\n\n0 NTSB Records\n\n100% Registrations Valid\n\nFleet Registration Health 2 of 2 aircraft have valid FAA registrations\n\nOversight Office SO13 - West Columbia (CAE) (FAA Flight Standards District Office)\n\nEarliest Airworthiness Cert 2019\n\nFleet Overview\n--------------\n\n1 Challenger 300/350\n1 Learjet 60\n\nFleet (2 aircraft)\n------------------\n\n| Tail Number | Type | Category | Year |\n| --- | --- | --- | --- |\n| N603GR | Learjet 60 | Midsize | 2001 |\n| N776CJ | Challenger 300/350 | Super Midsize | 2006 |",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "http://www.charterbroker.aero/direct_detail.html?id=168766",
+      "content": "Novus Jet Charter\n\nAircraft Operator - U.S.A.\n\nTelephone: +1 888 652 5387\nEmail: eric@novusjets.com\nWeb: novusjets.com\n\nAOC/Part 135: 6JXA074N (Jetex, LLC)\n\nWingman Certified: Yes\nARGUS Rating: No\nACSF IAS: No\nIS-BAO: No\n\nCharter bases and aircraft\n\nBoca Raton (KBCT), U.S.A.\n1 x Bombardier Challenger 300 - Pax;\n1 x Learjet 60 - Pax;\n\nCompany press releases\n\nAir Charter Safety Foundation (ACSF) expands Aviation Safety Action Program (ASAP) with addition of Novus Jet Charter and Otter Air Services — April 18, 2024",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://www.ch-aviation.com/news/148207-uss-novus-jet-charter-adds-first-challenger-300",
+      "content": "By Luciano Braganca 16Dec2024\n\nAbout Novus Jet Charter\n\nType: Business/Private Charter\nBase: Stuart Witham\nAircraft: 2\n\nNovus Jet Charter (Stuart Witham) expanded its Part 135-certified fleet in November 2024 with the addition of a first Challenger 300. The aircraft is expected to commence charter services at the beginning of January 2025, president Eric Sanchez confirmed to ch-aviation.\n\nN776CJ (msn 20107) is an 18.6-year-old aircraft, which joins a 22.7-year-old Learjet 60 under Novus Jet Charter's Part 135 certificate. The Learjet 60, inducted in June, replaced at the time a 30-year-old Learjet 31A.\n\n\"We are seeking additional aircraft to bring under management and plan to slowly expand our fleet,\" Sanchez told ch-aviation, without elaborating on the types.\n\nOriginally delivered to Canada's Skyservice Business Aviation, the Bombardier Business Aircraft midsize jet was most recently operated by Jet Linx Aviation. It last flew for the operator under the 'JTL' code on July 25 from Lakeland to Boca Raton.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://airguide.info/novus-jet-charter-expands-fleet-with-first-challenger-300/",
+      "content": "Novus Jet Charter Expands Fleet with First Challenger 300\n=========================================================\n\nNovus Jet Charter has expanded its Part 135-certified fleet with the addition of its first Challenger 300, which is set to begin charter services in January 2025, according to president Eric Sanchez. The newly acquired aircraft, N776CJ (msn 20107), is 18.6 years old and adds to the company's existing fleet, which includes a 22.7-year-old Learjet 60.\n\nThe Learjet 60, which was inducted in June 2024, replaced a 30-year-old Learjet 31A, marking a significant update for Novus Jet Charter's fleet. The company plans to continue its gradual expansion by seeking additional aircraft to bring under management, although Sanchez declined to specify which types of aircraft will be added in the future.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://www.businessairnews.com/hb_charterpage.html?recnum=168766",
+      "content": "Charter Operator\n\nNovus Jet Charter   (U.S.A.)\n\nCharter bases and aircraft\n\nBoca Raton | 1 x Bombardier Challenger 300 - Passenger\n1 x Learjet 60 - Passenger (8 pax)\n\nCertification\n\nAOC/Part 135: 6JXA074N (Jetex, LLC)\nWyvern Certified: Registered\nARGUS Rating: No\nACSF IAS: No\nIS-BAO: No\n\nCompany data\n\nTelephone: +1 888 652 5387\nEmail: eric@novusjets.com\nWeb: novusjets.com\n\nNews from Business Air News\n\nNovus builds on strong foundations with two-jet fleet\nJanuary 30, 2025\nNovus Jet Charter currently operates two aircraft: a Learjet 60 and a Challenger 300. Company president Eric Sanchez intends to grow the roster by at least two more aircraft soon, while providing a personalised service.\n\nNovus and Otter extend reach of ASAP\nApril 22, 2024\nNovus Jet Charter and Otter Air Services have joined the ACSF ASAP programme and will contribute to its overarching goal of advancing safety practices across the aviation industry.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    },
+    {
+      "url": "https://novusjets.com/fleet",
+      "content": "N776CJ - CHALLENGER 300\n\nYOM 2006\nYOR 2022\nCOMPLIMENTARY GOGO L5 WIFI\n\nN603GR - LEAR JET 60\n\nYOM 2001\nYOR 2024\nCOMPLIMENTARY GOGO L3 WIFI\n\nAir Carrier Certificate #6JXA074N\n\nCopyright © 2024 Novus Jet Charter, LLC - All Rights Reserved.",
+      "fetched_at": "2026-04-25T00:00:00Z"
+    }
+  ],
+  "additional_evidence_needed": null,
+  "cost_estimate_usd": 0.10
+}

@@ -1,0 +1,85 @@
+{
+  "decision": "ambiguous",
+  "decision_target_operator_id": null,
+  "decision_subtype": null,
+  "confidence": 0.0,
+  "verbatim_quotes": [
+    {
+      "url": "https://www.corporationwiki.com/search/results?term=summit+aviation+llc&search=1",
+      "quote": "### 15 Results Found",
+      "supports_claim": "At least 15 distinct legal entities named 'Summit Aviation LLC' exist across multiple US states (FL, CA, CO, MT, TX, AL, LA), making name-only matching insufficient to identify the specific FAA Part 135 cert 704A holder."
+    },
+    {
+      "url": "https://www.corporationwiki.com/p/3b1jed/summit-aviation-llc",
+      "quote": "Summit Aviation LLC filed as a **Florida Limited Liability** in the **State of Florida** and is **no longer active**. This corporate entity was filed approximately five years ago on Thursday, October 28, 2021 as recorded in documents filed with **Florida Department of State**.",
+      "supports_claim": "The Florida 'Summit Aviation LLC' (filed Oct 2021) is inactive, and its cert window (2023-01-25 to 2025-10-26) makes it an unlikely but not ruled-out match; the inactive status further reduces confidence."
+    }
+  ],
+  "reasoning": "Firecrawl searches and scrapes across corporationwiki.com, ainonline.com, bizjournals.com, flightaware.com, Wikipedia, and the FAA av-info portal failed to surface any source that unambiguously ties FAA Part 135 cert designator 704A to a specific legal entity. CorporationWiki lists at least 15 distinct entities named 'Summit Aviation LLC' registered across Florida, California, Colorado, Montana, Texas, Alabama, and Louisiana — making name-only matching unreliable. The candidate in the canonical DB ('Summit Aviation', operator_id 7f6ed56b) has unknown HQ, no aliases, no ICAO callsign, and was matched only by name similarity with empty signals. Without at least one independently published source confirming the cert holder's state of registration, headquarters airport, or other unique identifier, a match or new_entity decision cannot be made responsibly.",
+  "firecrawl_urls_fetched": [
+    "https://www.summitaviationllc.com",
+    "https://en.wikipedia.org/wiki/Summit_Aviation",
+    "https://av-info.faa.gov/detail.asp?DSGN_CODE=704A&OPER_FAR=135",
+    "https://www.summitaviation.com",
+    "https://flightaware.com/live/flight/SUM704A",
+    "https://www.bizjournals.com/search/results?q=%22Summit+Aviation+LLC%22",
+    "https://www.ainonline.com/search?q=%22Summit+Aviation+LLC%22",
+    "https://www.corporationwiki.com/search/results?term=summit+aviation+llc&search=1",
+    "https://www.corporationwiki.com/p/3b1jed/summit-aviation-llc",
+    "https://en.wikipedia.org/wiki/Summit_Aviation_LLC"
+  ],
+  "firecrawl_pages": [
+    {
+      "url": "https://www.summitaviationllc.com",
+      "content": "ERROR: All scraping engines failed to retrieve content from this URL.",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Summit_Aviation",
+      "content": "Summit Air (8199400 Canada Inc.) is a Canadian airline headquartered in Yellowknife that operates scheduled, charter and cargo aviation throughout the Northwest Territories, Nunavut, and Yukon. Summit Air is a member of the Ledcor Group of Companies... Founded 1987 ... Headquarters Yellowknife, Northwest Territories, Canada ... Website www.flysummitair.com",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://av-info.faa.gov/detail.asp?DSGN_CODE=704A&OPER_FAR=135",
+      "content": "Service Unavailable --- HTTP Error 503. The service is unavailable.",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://www.summitaviation.com",
+      "content": "A (minimal content; site is about FAA regulations DVD database, not a charter operator)",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://flightaware.com/live/flight/SUM704A",
+      "content": "Unknown Flight - FlightAware (no flight data found for SUM704A callsign)",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://www.bizjournals.com/search/results?q=%22Summit+Aviation+LLC%22",
+      "content": "**2** Results --- [News Oct 11, 2023, 8:02PM EDT Denver Business Journal ### New Business Leads - Collected week of October 6, 2023] [News Nov 7, 2018, 8:26PM EST Nashville Business Journal ### New Business Leads - Collected week of November 2, 2018] (both subscriber-only, content inaccessible)",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://www.ainonline.com/search?q=%22Summit+Aviation+LLC%22",
+      "content": "89859 search results for (generic latest articles — no results specific to 'Summit Aviation LLC')",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://www.corporationwiki.com/search/results?term=summit+aviation+llc&search=1",
+      "content": "### 15 Results Found\n\n### States\n\nAlabama (1)California (3)Colorado (2)Florida (6)Louisiana (1)Montana (3)Texas (6)\n\n[Summit Aviation LLC] Miami, FL\nOfficers: Mariana G B Menendez, Luciano Querciali and 1 other Edelmiro Gabri Centorami\n\n[Summit Aviation LLC] Belgrade, MT\nOfficers: Benjamin J. Walton, Christen Read\n\n[Summit Aviation, LLC] Anahuac, TX\nOfficers: Tobi J. Van Zandt, Warren C. Van Zandt\n\n[Summit Aviation, LLC] Van Nuys, CA\nOfficers: Dean Schweitzer, Tom Brown\n\n[Summit Aviation Services LLC] San Francisco, CA\n\n[Summit Aviation, LLC] Harker Heights, TX\nOfficers: Cloy O. Packwood\n\n[Aviation Summit, LLC] Doral, FL\n\n[Aviation Summit LLC] Hialeah, FL\n\n[Summit Aviation, LLC] Loveland, CO\nOfficers: William Alsum",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://www.corporationwiki.com/p/3b1jed/summit-aviation-llc",
+      "content": "Summit Aviation LLC filed as a **Florida Limited Liability** in the **State of Florida** and is **no longer active**. This corporate entity was filed approximately five years ago on Thursday, October 28, 2021 as recorded in documents filed with **Florida Department of State**. There are a couple of officers known to have been associated with this organization.\n\nFiling Type: Florida Limited Liability\nStatus: Inactive\nState: Florida\nState ID: L21000469151\nDate Filed: Thursday, October 28, 2021",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Summit_Aviation_LLC",
+      "content": "Wikipedia does not have an article with this exact name.",
+      "fetched_at": "2026-04-25T23:54:03Z"
+    }
+  ],
+  "additional_evidence_needed": "1) FAA av-info portal (currently 503) detail page for cert designator 704A to confirm holder name, address, and FSDO district — this would identify the specific state and HQ airport. 2) A state Secretary of State business entity search confirming which state's 'Summit Aviation LLC' holds a Part 135 certificate. 3) Any accessible source (charter aggregator, airport directory, or operator website) that names this specific operator and its cert. If forced to choose, candidate [1] 'Summit Aviation' (7f6ed56b) is the closest by name, but the absence of any corroborating signal (HQ, ICAO, aliases) makes even a tentative match unreliable — the DB candidate could be a placeholder for a completely different company.",
+  "cost_estimate_usd": 0.04
+}
