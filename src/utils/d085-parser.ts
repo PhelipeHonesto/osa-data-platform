@@ -16,12 +16,19 @@
  * dumps observed headers and bails with a message identifying which entry
  * to update.
  *
- * Observed D085 schemas (12 archived xlsx, 2023-01-25 → 2025-10-26):
- *   "Part 135 Certificate Holder Name" | "Certificate Designator" |
- *   "FAA Certificate Holding District Office" | "Registration Number" |
- *   "Serial Number" | "Aircraft Make/Model/Series"
- * The 2023-only "CFR" column is dropped in 2024+ headers (always 135 anyway).
- * No DBA column exists; aliases of type 'dba' are not produced from D085.
+ * Observed D085 schemas:
+ *   Pre-2026-05 (12 archived xlsx, 2023-01-25 → 2026-02-16):
+ *     "Part 135 Certificate Holder Name" | "Certificate Designator" |
+ *     "FAA Certificate Holding District Office" | "Registration Number" |
+ *     "Serial Number" | "Aircraft Make/Model/Series"
+ *   Post-2026-05 (FAA restoration 2026-05-01, weekly cadence):
+ *     "CFR" | "CHDO" | "DSGN" | "Name" | "Aircraft M/M/S" |
+ *     "Registration No." | "Serial No."
+ * The 2023-only "CFR" column was dropped in 2024–2026-02 headers, then
+ * returned as the leading column in the 2026-05 dialect with values
+ * '135' (~98.9%) and '121/135' (~1.1%).
+ * No DBA column exists in either dialect; aliases of type 'dba' are
+ * sourced from av-info.faa.gov in Step B (parallel track).
  */
 
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
@@ -65,6 +72,7 @@ export const COLUMNS = {
       "Certificate Designator",
       "Certificate Number",
       "FAA Certificate Number",
+      "DSGN",
     ],
   },
   operator_name: {
@@ -85,12 +93,25 @@ export const COLUMNS = {
     required: false,
     candidates: [
       "Registration Number",
+      "Registration No.",
       "N-Number",
       "N Number",
       "Tail Number",
       "Tail",
       "Aircraft Registration",
     ],
+  },
+  operating_part: {
+    required: false,
+    candidates: ["CFR"],
+  },
+  fsdo: {
+    required: false,
+    candidates: ["CHDO", "FAA Certificate Holding District Office"],
+  },
+  make_model_series: {
+    required: false,
+    candidates: ["Aircraft M/M/S", "Aircraft Make/Model/Series"],
   },
 } as const;
 
@@ -118,6 +139,9 @@ export interface D085Row {
   holder_name: string;
   dba_name: string | null;
   tail_number: string | null;
+  operating_part: string | null;
+  fsdo: string | null;
+  make_model_series: string | null;
   xlsx_s3_key: string;
   xlsx_cdx_ts: string;
 }
@@ -129,6 +153,9 @@ interface HeaderHit {
   nameIdx: number;
   dbaIdx: number;
   tailIdx: number;
+  operatingPartIdx: number;
+  fsdoIdx: number;
+  mmsIdx: number;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -185,7 +212,10 @@ function findHeaderRow(rows: unknown[][]): HeaderHit | null {
     if (certIdx >= 0 && nameIdx >= 0) {
       const dbaIdx = findColumnIndex(hs, COLUMNS.dba_name.candidates);
       const tailIdx = findColumnIndex(hs, COLUMNS.tail_number.candidates);
-      return { rowIndex: r, headers: hs, certIdx, nameIdx, dbaIdx, tailIdx };
+      const operatingPartIdx = findColumnIndex(hs, COLUMNS.operating_part.candidates);
+      const fsdoIdx = findColumnIndex(hs, COLUMNS.fsdo.candidates);
+      const mmsIdx = findColumnIndex(hs, COLUMNS.make_model_series.candidates);
+      return { rowIndex: r, headers: hs, certIdx, nameIdx, dbaIdx, tailIdx, operatingPartIdx, fsdoIdx, mmsIdx };
     }
   }
   return null;
@@ -239,12 +269,18 @@ export function parseD085Xlsx(buf: Buffer, xlsxS3Key: string): D085Row[] {
     const name = String(row[hit.nameIdx] ?? "").trim();
     const dba = hit.dbaIdx >= 0 ? String(row[hit.dbaIdx] ?? "").trim() : "";
     const tail = hit.tailIdx >= 0 ? String(row[hit.tailIdx] ?? "").trim() : "";
+    const operatingPart = hit.operatingPartIdx >= 0 ? String(row[hit.operatingPartIdx] ?? "").trim() : "";
+    const fsdo = hit.fsdoIdx >= 0 ? String(row[hit.fsdoIdx] ?? "").trim() : "";
+    const mms = hit.mmsIdx >= 0 ? String(row[hit.mmsIdx] ?? "").trim() : "";
     if (!cert || !name) continue;
     out.push({
       cert_number: cert,
       holder_name: name,
       dba_name: dba || null,
       tail_number: tail || null,
+      operating_part: operatingPart || null,
+      fsdo: fsdo || null,
+      make_model_series: mms || null,
       xlsx_s3_key: xlsxS3Key,
       xlsx_cdx_ts: cdxTs,
     });
