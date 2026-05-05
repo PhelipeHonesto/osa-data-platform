@@ -12,6 +12,12 @@ dist/
 # Runtime data
 data/
 scripts/s3-restore-state.json
+scripts/data/
+
+# Python venvs (eval tools, calibration scripts)
+scripts/eval/.venv/
+scripts/eval/__pycache__/
+scripts/eval/*.pyc
 
 # Editor / OS
 .DS_Store

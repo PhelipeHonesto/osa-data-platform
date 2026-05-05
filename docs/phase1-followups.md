@@ -642,3 +642,65 @@ Plus a test case each.
 This is update-in-place, NOT close-then-insert. Close-then-insert is for operator changes (the aircraft moves from one operator to another). Update-in-place is for "same operator, more evidence."
 
 **Priority**: Medium. Activates value as `adsb_positions` accumulates. Build when the live ingest is back to writing positions and there's multi-day data to corroborate against. Pre-condition: position count grows enough that re-runs would meaningfully shift confidence (probably 1–2 weeks of natural ingest after worker resumes).
+
+---
+
+## Track 6 Step 2c.6: lookalike-misresolution remediation
+
+**Discovered**: 2026-05-04, Session A.0 + A.0.5 audit of the cert-bridge derivation plan.
+
+**Finding**: Step 2c's high-tier (`confidence=0.95`) output contains a small but real population of *semantically-different-but-lexically-similar* false positives — the resolver matched FAA D085 holder names to the wrong canonical operator because the right canonical didn't exist in `public.operators`. Five distinct false positives were confirmed in 121 0.95-tier rows (4.1% pollution rate):
+
+- **FJTA**: Corporate Aircraft Management Inc. (canonical, wrong) ← Corporate Flight Management, Inc. (FAA holder, truth)
+- **GQ9C**: ENG Aviation Inc. ← GQ Aviation, Inc.
+- **TCHA** (×2 temporal rows): Executive Jet Management ← Executive Flight Management
+- **70TA**: Triton Airways, LLC ← Triton Air LLC
+- **OW6A**: Arrow Aviation ← Arrow West Aviation
+
+The 6 polluted rows were quarantined via the A.0.6 corrective sweep (`scripts/quarantine-step2c-lookalike-falseps.ts`, audit run id `A.0-2026-05-04`) into `canonical.operator_holds_certificate_pending` with `reason='lookalike_misresolution'` (added by migration `2026-05-04-002`). Audit doc: `.work/llm-er-pass/a0-step2c-lookalike-audit-2026-05-04.md`.
+
+**Three remediations remain. None block Session A's cert-bridge derivation against the cleaned canonical pool, but each tightens the system before Step 2c re-runs.**
+
+### Item 1 — Lower-tier audit
+
+The A.0.5 audit covered only `confidence=0.95` rows. The same look-alike pattern likely hides at:
+- `confidence=0.85` (medium-tier, name-only matches)
+- `confidence=0.75` (low-tier, fuzzy matches that crossed the calibrated 0.60 floor)
+
+**Fix**: re-run the A.0.5 normalization pass against the full medium- and low-tier `canonical.operator_holds_certificate WHERE source='faa_d085'` populations. Surface the REVIEW set, manual-classify, quarantine confirmed false positives via the same `lookalike_misresolution` pathway.
+
+**Priority**: Medium. Lower-tier rows already wear lower confidence so downstream consumers are expected to surface them for review anyway. But for cert-bridge or any analytics that reads regardless of confidence, the pollution still propagates.
+
+### Item 2 — Resolver gate tightening
+
+The current Step 2c high-tier acceptance is governed by:
+- `top_score ≥ 0.91` (calibrated 2026-04-19)
+- The decide() logic in `src/entity-resolution/operator-resolver.ts`
+
+These gates do not catch *semantically-different-but-lexically-similar* matches. The audit's confirmed false positives exhibit two patterns:
+1. **Small score gap**: top - runner_up < 0.15 (FJTA, GQ9C, TCHA all had top - runner_up gaps under 0.15)
+2. **Load-bearing noun divergence**: the differing word between canonical and holder names is a domain-meaningful operator-type marker (Aircraft / Flight / Air / Airways / Jet / Charter / Service)
+
+**Fix**: extend the resolver decide() gate for the 0.95-tier:
+1. Require `top_score - runner_up_score ≥ 0.15` (when runner_up exists; rows with NULL runner_up keep the existing top-score check).
+2. Tokenize both names. Identify the load-bearing-noun set: Aircraft, Flight, Air, Airways, Jet, Jets, Charter, Charters, Service, Services, Aviation, Airlines. If both names contain a load-bearing noun and they are NOT the same noun, refuse the match (downgrade to review tier). "Aviation" overlaps with most other markers and shouldn't gate alone — apply the rule only when the diverging tokens are mutually exclusive (e.g., "Aircraft" vs "Flight" is gated, but "Aviation" vs "Aviation Services" is not).
+
+This is a code change in `src/entity-resolution/operator-resolver.ts` (decide() function). It needs unit tests using the 5 known false positives as regression cases. After deployment, re-run Step 2c on the same source data and verify the 5 cases now route to review (or no_match).
+
+**Priority**: High *before any Step 2c re-run*. Without this, re-running Step 2c will reintroduce the same pollution.
+
+### Item 3 — Canonical pool densification (blocked)
+
+All 5 false-positive holder names verified as **absent from `public.operators`**: the resolver had nothing better to match. The deeper cause is the synthesizer pollution flagged in this doc's §1: only ~50 of 3,898 `faa_operators` rows are real Part 135 operators. The Part 135 universe is under-canonicalized.
+
+**Fix**: blocked on the `faa-operators-full.ts` rewrite (this doc's §1). Once the canonical operator pool is dense, Step 2c can be re-run with confidence that the right entity exists for the resolver to find.
+
+**Priority**: Blocked. Track this item via the §1 rewrite. After §1 lands and the pool is densified, sequence Step 2c re-run after Item 2 (gate tightening) — both are pre-conditions for a clean re-pass.
+
+### Re-run sequence
+
+1. Land `faa-operators-full.ts` rewrite (§1).
+2. Re-ingest the canonical operator pool from clean sources.
+3. Land Item 2 (resolver gate tightening) with regression unit tests for the 5 known false positives.
+4. Re-run Step 2c against the densified pool with the tightened gates.
+5. Re-run A.0.5 audit pattern. Spot-check before letting cert-bridge re-derive from the updated `canonical.operator_holds_certificate`.
