@@ -52,7 +52,13 @@ import pg from "pg";
 const SOURCE = "faa_d085_via_cert_bridge";
 const MATCH_METHOD = "cert_bridge_join";
 const ROLE = "operator";
-const CHECKPOINT = "track6_step2d_cert_bridge";
+// Updated 2026-05-05 (Session A.5 Phase 4): bumped checkpoint to scope the
+// rerun against the densified ohc/aoc population (faa_d085_seed +
+// faa_d085_2026_05_01 added to candidate SQL). cert-bridge SOURCE captures
+// the bridge mechanism, not the source data — date-precise versioning lives
+// in evidence.ingest_run_id and evidence.aoc_id/ohc_id, so SOURCE stays
+// unified. The refused-if-populated guard is now per-checkpoint.
+const CHECKPOINT = "track1_session_a5_may1_cert_bridge";
 
 const PG_EXCLUSION_VIOLATION = "23P01";
 
@@ -134,15 +140,22 @@ JOIN canonical.operator_holds_certificate ohc
   ON ohc.cert_id = aoc.cert_id
  AND daterange(ohc.valid_from, ohc.valid_to, '[)')
      && daterange(aoc.valid_from, aoc.valid_to, '[)')
-WHERE aoc.source = 'faa_d085'
-  AND ohc.source = 'faa_d085'
+WHERE aoc.source LIKE 'faa_d085%'
+  AND ohc.source LIKE 'faa_d085%'
 ORDER BY aoc.aircraft_id, valid_from
 `;
 
+// Per-checkpoint guard (was per-source before Session A.5 Phase 4). The
+// SOURCE='faa_d085_via_cert_bridge' is unified across reruns; idempotency
+// is now scoped by CHECKPOINT via evidence->>'ingest_run_id' and
+// backfill_run_id LIKE the same prefix.
 const REFUSED_IF_POPULATED_SQL = `
 SELECT
-  (SELECT COUNT(*) FROM canonical.operator_aircraft_link  WHERE source = $1)::int AS link_rows,
-  (SELECT COUNT(*) FROM canonical.operator_aircraft_resolution_log WHERE backfill_run_id LIKE $2)::int AS log_rows
+  (SELECT COUNT(*) FROM canonical.operator_aircraft_link
+    WHERE source = $1
+      AND evidence->>'ingest_run_id' LIKE $2)::int AS link_rows,
+  (SELECT COUNT(*) FROM canonical.operator_aircraft_resolution_log
+    WHERE backfill_run_id LIKE $2)::int AS log_rows
 `;
 
 const NOT_EXISTS_OVERLAP_SQL = `
@@ -267,15 +280,15 @@ async function main(): Promise<void> {
   const guard = guardResult.rows[0]!;
   if (guard.link_rows > 0 || guard.log_rows > 0) {
     console.error(
-      `[cert-bridge] Refused: ` +
-        `operator_aircraft_link source='${SOURCE}' has ${guard.link_rows} rows; ` +
-        `operator_aircraft_resolution_log backfill_run_id LIKE '${CHECKPOINT}%' has ${guard.log_rows} rows. ` +
-        `Manual rollback required to re-run.`,
+      `[cert-bridge] Refused (per-checkpoint guard): ` +
+        `operator_aircraft_link[source='${SOURCE}', evidence.ingest_run_id LIKE '${CHECKPOINT}%'] has ${guard.link_rows} rows; ` +
+        `operator_aircraft_resolution_log[backfill_run_id LIKE '${CHECKPOINT}%'] has ${guard.log_rows} rows. ` +
+        `Bump CHECKPOINT or manually rollback rows under this checkpoint to re-run.`,
     );
     await pool.end();
     process.exit(1);
   }
-  console.log(`[cert-bridge] Refused-if-populated guard: clean (link_rows=0, log_rows=0).`);
+  console.log(`[cert-bridge] Per-checkpoint guard: clean (link_rows=0, log_rows=0 under '${CHECKPOINT}').`);
 
   // ── Pull candidates ────────────────────────────────────────────────────
 
