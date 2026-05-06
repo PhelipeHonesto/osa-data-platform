@@ -99,7 +99,77 @@ const STALE_IN_PROGRESS_MINUTES = 60;
 const TOP_K_CANDIDATES = 5;
 const FIRECRAWL_MAX_PAGES_PER_RECORD = 8;
 
-const ELIGIBLE_INPUT_STEPS = ["step2c", "step2c.5_phase1_collision"] as const;
+// Eligible input_step values for --claim-next. 'a8_null_typed_deferral' is
+// forward-looking — added per Session B design doc (Phase 4b deferrals from
+// A.8). Cohort B routing happens in a separate session before any LLM run
+// against these rows; adding here ensures the driver doesn't reject them
+// once routing lands.
+const ELIGIBLE_INPUT_STEPS = [
+  "step2c",
+  "step2c.5_phase1_collision",
+  "a8_null_typed_deferral",
+] as const;
+
+// SOURCE_BUCKETS — Two-Source Rule independence buckets per
+// docs/plans/llm-er-pass-design.md §"Source trust tiering". Two URLs in
+// the SAME bucket count as ONE source; two URLs in DIFFERENT buckets
+// count as two. Aggregators (BJT, AIN, Corporate Jet Investor, etc.)
+// share one bucket — the parent plan and design doc both stipulate that
+// LLM aggregators collectively count as one source.
+//
+// Tier 2 (operator self-published) is resolved at runtime via root-domain
+// extraction — each operator's own domain becomes its own bucket
+// dynamically (see bucketForUrl below).
+const SOURCE_BUCKETS = new Map<string, string>([
+  // Tier 1 — public authoritative (each authority its own bucket)
+  ["faa.gov", "tier1_faa"],
+  ["registry.faa.gov", "tier1_faa"],
+  ["av-info.faa.gov", "tier1_faa"],
+  ["www.faa.gov", "tier1_faa"],
+  ["ntsb.gov", "tier1_ntsb"],
+  ["data.ntsb.gov", "tier1_ntsb"],
+  ["www.ntsb.gov", "tier1_ntsb"],
+  ["sec.gov", "tier1_sec"],
+  ["www.sec.gov", "tier1_sec"],
+  // Tier 3 — aggregators share a single bucket (LLM-aggregator clause)
+  ["corporatejetinvestor.com", "tier3_aggregator"],
+  ["www.corporatejetinvestor.com", "tier3_aggregator"],
+  ["bjtonline.com", "tier3_aggregator"],
+  ["www.bjtonline.com", "tier3_aggregator"],
+  ["ainonline.com", "tier3_aggregator"],
+  ["www.ainonline.com", "tier3_aggregator"],
+  ["aviationweek.com", "tier3_aggregator"],
+  ["www.aviationweek.com", "tier3_aggregator"],
+  ["flightglobal.com", "tier3_aggregator"],
+  ["www.flightglobal.com", "tier3_aggregator"],
+  ["loudhawk.com", "tier3_aggregator"],
+  ["en.wikipedia.org", "tier3_aggregator"],
+  ["wikipedia.org", "tier3_aggregator"],
+]);
+
+/**
+ * Resolve a URL's hostname to a Two-Source Rule bucket id.
+ * - Hostname in SOURCE_BUCKETS: returns the bucket id.
+ * - Otherwise: returns a tier-2-style bucket of the form 'tier2_<rootDomain>',
+ *   treating each unique domain as its own bucket. State SOS portals,
+ *   operator-self-published, foreign registries all fall here.
+ */
+export function bucketForUrl(url: string): string | null {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  const known = SOURCE_BUCKETS.get(host);
+  if (known) return known;
+  // Strip leading 'www.' for the dynamic-tier-2 fallback so 'www.foo.com'
+  // and 'foo.com' bucket the same.
+  const rootHost = host.replace(/^www\./, "");
+  const knownRoot = SOURCE_BUCKETS.get(rootHost);
+  if (knownRoot) return knownRoot;
+  return `tier2_${rootHost}`;
+}
 
 const FIXTURE_HOLDOUT_PATH = "scripts/fixtures/llm-eval-holdout-30.json";
 const FIXTURE_TOP20_PATH = "scripts/fixtures/top-20-by-fleet.json";
@@ -128,6 +198,13 @@ interface Args {
   maxRecords: number | null;
   autoApproveAll: boolean;
   budgetCapUsd: number;
+  costCap: number | null;        // --cost-cap=N. Halts --claim-next when
+                                  // SUM(cost_estimate_usd) on completed/
+                                  // committed rows ≥ N. Per Session B
+                                  // design doc.
+  checkpointEvery: number | null; // --checkpoint-every=N. Halts --commit
+                                  // after N rows committed in this run.
+                                  // Per Session B design doc.
   checkpointId: string | null;
   errorMessage: string | null;
   evalDir: string | null;
@@ -262,6 +339,8 @@ function parseArgs(): Args {
 
   const maxFlag = args.find((a) => a.startsWith("--max-records="));
   const budgetFlag = args.find((a) => a.startsWith("--budget-cap-usd="));
+  const costCapFlag = args.find((a) => a.startsWith("--cost-cap="));
+  const checkpointEveryFlag = args.find((a) => a.startsWith("--checkpoint-every="));
 
   return {
     mode,
@@ -270,6 +349,10 @@ function parseArgs(): Args {
     budgetCapUsd: budgetFlag
       ? Number.parseFloat(budgetFlag.split("=")[1]!)
       : DEFAULT_BUDGET_CAP_USD,
+    costCap: costCapFlag ? Number.parseFloat(costCapFlag.split("=")[1]!) : null,
+    checkpointEvery: checkpointEveryFlag
+      ? Number.parseInt(checkpointEveryFlag.split("=")[1]!, 10)
+      : null,
     checkpointId:
       mode === "submit-response" || mode === "mark-failed"
         ? positionalAfter(`--${mode}`)
@@ -342,6 +425,14 @@ Flags:
   --max-records=N                Reserved (no longer enforced from inside
                                  the script — orchestrator counts iterations).
   --budget-cap-usd=N             Reserved (orchestrator tracks).
+  --cost-cap=N                   --claim-next: halt when SUM(cost_estimate_usd)
+                                 across completed/committed rows ≥ N. Returns
+                                 {empty:true, halted_by_cost_cap:true} so the
+                                 orchestrator stops cleanly. Per Session B
+                                 design doc.
+  --checkpoint-every=N           --commit: halt after committing N rows in
+                                 this run (counted by run_id). Surfaces
+                                 batch summary. Per Session B design doc.
   --auto-approve-all             --commit only: bypass surface-for-review.
 `);
 }
@@ -608,23 +699,32 @@ export function validateLLMResponse(
     }
   }
 
-  const domains = new Set<string>();
+  // Two-Source Rule independence check via SOURCE_BUCKETS. Tier 1 sources
+  // (faa.gov, ntsb.gov, sec.gov) each bucket separately; aggregators
+  // (BJT/AIN/Wikipedia/etc.) share one bucket; operator-self / state SOS /
+  // foreign registries get their own dynamic bucket per root domain.
+  // ≥2 distinct buckets required for any non-ambiguous decision.
+  const buckets = new Set<string>();
   for (const q of response.verbatim_quotes) {
-    try {
-      domains.add(new URL(q.url).hostname.toLowerCase());
-    } catch {
+    const b = bucketForUrl(q.url);
+    if (!b) {
       return {
         valid: false,
         reason: "cited_url_not_fetched",
         detail: `URL ${q.url} is not a valid URL`,
       };
     }
+    buckets.add(b);
   }
-  if (domains.size < 2) {
+  if (buckets.size < 2) {
     return {
       valid: false,
       reason: "two_source_rule_violation_one_domain",
-      detail: `Only 1 distinct domain in citations: ${[...domains].join(", ")}`,
+      detail:
+        `Only 1 distinct source bucket in citations: ${[...buckets].join(", ")}. ` +
+        `Aggregators (BJT, AIN, Wikipedia, CJI, etc.) collectively count as ` +
+        `one bucket. Need 2 distinct buckets — pair an aggregator with a Tier-1 ` +
+        `source (FAA/NTSB/SEC) or operator's own website.`,
     };
   }
 
@@ -684,51 +784,123 @@ export function renderSelectingPrompt(
     )
     .join("\n\n");
 
-  return `You are doing entity resolution for a canonical aviation operators database.
+  return `You are a charter-brokerage entity-resolution specialist. For the input
+record below, decide whether it matches an existing canonical operator,
+is a brand-member (subsidiary/sister) of one, represents a structural
+event (rebrand/M&A/cert lifecycle), is a genuinely new entity, or
+requires human review.
 
-INPUT — operator name from FAA Part 135 records:
-  HOLDER NAME (verbatim): ${record.scraped_name}
-  HOLDER NAME (normalized): ${holderNorm}
-  CERT DESIGNATOR: ${certDesignator}
-  CERT VALID WINDOW: ${certWindow}
-  DBA (if any): ${dba}
+PROMPT VERSION: V3 (Cohort A — FAA holder-name-vs-canonical task,
+Session B per docs/plans/llm-er-pass-design.md)
 
-CANDIDATE CANONICAL OPERATORS (top-K from prior matcher pass, in score order):
+═══════════════════════════════════════════════════════════════════════
+INPUT RECORD — operator name from FAA Part 135 records
+═══════════════════════════════════════════════════════════════════════
+  HOLDER NAME (verbatim):      ${record.scraped_name}
+  HOLDER NAME (normalized):    ${holderNorm}
+  CERT DESIGNATOR:             ${certDesignator}
+  CERT VALID WINDOW:           ${certWindow}
+  DBA (if any):                ${dba}
+
+CANDIDATE CANONICAL OPERATORS (top-K from prior matcher pass, score-ordered):
 ${candidateLines}
 
-YOUR TASK
-1. Use the Firecrawl MCP tool (mcp__firecrawl__firecrawl_scrape) to scrape AT LEAST
-   TWO INDEPENDENTLY PUBLISHED sources about "${record.scraped_name}". Independence
-   means different publishers (an operator's own website + Wikipedia = two; two
-   different aviation news outlets = two; the same outlet's two articles = ONE).
-   Required scrape order (try each, stop at 2+ independent sources, max ${FIRECRAWL_MAX_PAGES_PER_RECORD} total scrapes):
-     a. Operator's own website (try https://www.{normalized_lowercase}.com if no other URL)
-     b. Wikipedia (en.wikipedia.org/wiki/{name})
-     c. AINonline OR AvWeb OR Aviation Week OR Business Jet Traveler search
-     d. SEC EDGAR if the holder name suggests a public company
-     e. State Secretary of State business search if the LLC suffix suggests a state
-     f. Aggregator search for "{holder_name} acquisition" / "rebrand" / "merger"
+═══════════════════════════════════════════════════════════════════════
+RESEARCH BUDGET — tier-based scrape order
+═══════════════════════════════════════════════════════════════════════
+You have up to ${FIRECRAWL_MAX_PAGES_PER_RECORD} Firecrawl page fetches.
+Spend them in tier order:
 
-2. Decide ONE of:
-   (a) MATCH — which numbered candidate (1..K) is the same legal/commercial entity
-       as the FAA holder name?
-   (b) NEW_ENTITY — the holder is genuinely distinct from all candidates.
-   (c) AMBIGUOUS — evidence is insufficient to choose.
+  Tier 1 (authoritative, 1-3 fetches): faa.gov registry inquiry,
+    sec.gov for public-company filings, ntsb.gov for accident attribution.
+    Tier 1 alone often resolves the question — try here FIRST.
+  Tier 2 (operator self, 0-2 fetches): operator's own website
+    (try https://www.{normalized_lowercase}.com or DBA equivalent).
+    Each operator-self domain is its OWN Two-Source bucket.
+  Tier 3 (aggregators, 0-3 fetches): Wikipedia, AINonline, BJT, Aviation
+    Week, FlightGlobal, Corporate Jet Investor, Loud Hawk. ALL of these
+    share ONE Two-Source bucket — pairing two of them does NOT satisfy
+    the Two-Source Rule.
 
-3. For (a) or (b), provide:
-   - VERBATIM QUOTE from the Firecrawl results that supports your decision
-     (mandatory; minimum one quote per claim)
-   - URL of the source(s) cited (each URL must appear in the actual scraped pages
-     you fetched in step 1 — no inferred or constructed URLs)
-   - REASONING CHAIN (2-4 sentences)
-   - CONFIDENCE 0.0-1.0 (your subjective; we cap at ${CONFIDENCE_POST_CAP} regardless)
+═══════════════════════════════════════════════════════════════════════
+DECISION TASK — emit ONE decision per record
+═══════════════════════════════════════════════════════════════════════
+  (a) MATCH — which numbered candidate (1..K) is the same operator as the
+      FAA holder name? Use decision_subtype to specify the relationship:
+        - exact_alias: same legal/commercial entity, different name spelling
+        - subsidiary_of_canonical: holder is a subsidiary/sister/dba of the
+          canonical operator (writes brand_membership_pending — preserves
+          the structural relationship)
+        - rebrand_to_canonical: holder is a former name of the canonical
+          operator due to a rebrand event (writes operator_event_pending
+          with event_type='rebrand')
+  (b) NEW_ENTITY — holder is genuinely distinct from all candidates. Use
+      decision_subtype:
+        - distinct_legal_entity: domestic operator not in canonical
+        - distinct_brand: foreign operator or new brand
+  (c) AMBIGUOUS — evidence insufficient. Explain what would resolve it.
 
-4. For (c), explain:
-   - What additional evidence would resolve the ambiguity
-   - Which candidate is closest if forced to choose, and why it's not strong enough
+═══════════════════════════════════════════════════════════════════════
+TWO-SOURCE RULE — non-negotiable for non-ambiguous decisions
+═══════════════════════════════════════════════════════════════════════
+For decision='match' or 'new_entity', citations must come from ≥2 DISTINCT
+SOURCE BUCKETS (NOT just distinct domains). Bucket map:
 
-OUTPUT FORMAT — RETURN VALID JSON, NO COMMENTARY OUTSIDE THE JSON. The JSON object
-MUST conform exactly to this shape (the orchestrating script parses it directly):
+  - faa.gov / registry.faa.gov / av-info.faa.gov  → bucket 'tier1_faa'
+  - ntsb.gov / data.ntsb.gov                      → bucket 'tier1_ntsb'
+  - sec.gov / www.sec.gov                         → bucket 'tier1_sec'
+  - corporatejetinvestor.com, bjtonline.com,      → bucket 'tier3_aggregator'
+    ainonline.com, aviationweek.com,                (ALL share one bucket)
+    flightglobal.com, loudhawk.com,
+    en.wikipedia.org, wikipedia.org
+  - any other domain (operator self, state SOS,    → bucket 'tier2_<rootdomain>'
+    foreign registry)                                (each its own bucket)
+
+Two FAA URLs = ONE bucket. FAA + Wikipedia = TWO buckets. Wikipedia + AIN
+= ONE bucket (both aggregators). FAA + operator-own-site = TWO buckets.
+
+If only one bucket is available, return decision='ambiguous' with
+"additional_evidence_needed" filled. Do NOT fabricate a second source.
+
+═══════════════════════════════════════════════════════════════════════
+FAILURE-MODE HINTS (Cohort A patterns from Phase 2 eval)
+═══════════════════════════════════════════════════════════════════════
+F1. Recently-renamed operators with no web presence yet.
+    If the cert was issued in the last 90 days AND no Tier-1/2 source
+    mentions the operator by name → return AMBIGUOUS with reason
+    'recent_rename_no_corroborating_publisher'. Do NOT guess at a match.
+
+F2. Foreign operators without FAA cert.
+    If the holder name is a foreign legal form (Ltd, GmbH, S.A. de C.V.,
+    Pty Ltd, Sdn Bhd, S.r.l.) and FAA cert lookup returns nothing → likely
+    NEW_ENTITY with subtype='distinct_brand'. Do NOT force a match to a
+    domestic candidate just because the name is similar.
+
+F3. Brand-vs-LLC discrimination.
+    "Wheels Up Partners LLC" vs "Wheels Up", "JetRight Aerospace Holdings"
+    vs "JetRight". The LLC/Partners/Holdings suffix + name overlap with a
+    candidate is a strong signal for MATCH with subtype='subsidiary_of_canonical'.
+    Do NOT create a new operator for these — they're subsidiaries of an
+    existing brand. Output brand_role='subsidiary' (or 'parent', 'sister',
+    'divested', 'dba_only') in evidence.
+
+F4. Defunct operators with stale web pages.
+    Check FAA cert status FIRST (faa.gov registry inquiry). If FAA shows
+    surrendered/revoked/consolidated AND aviation press still describes
+    the operator as active, the FAA evidence wins. Choose:
+      - exact_alias to a canonical defunct operator if one exists
+      - rebrand_to_canonical with evidence.event_type='cert_surrender' or
+        'cert_revocation' or 'dissolution' if the canonical operator is the
+        successor entity (e.g. cert was consolidated into another operator)
+
+F6. Single-source corroboration gap.
+    A strong Tier-1 source alone is NOT enough for a non-ambiguous decision.
+    Two-Source Rule applies regardless of source quality. Pair Tier-1 with
+    operator-self or another Tier-1 from a different authority.
+
+═══════════════════════════════════════════════════════════════════════
+OUTPUT FORMAT — VALID JSON, NO COMMENTARY OUTSIDE THE JSON
+═══════════════════════════════════════════════════════════════════════
 {
   "decision": "match" | "new_entity" | "ambiguous" | "error",
   "decision_target_operator_id": "<uuid>" | null,
@@ -748,40 +920,62 @@ MUST conform exactly to this shape (the orchestrating script parses it directly)
     {"url": "https://...", "content": "full scraped markdown content", "fetched_at": "2026-..."}
   ],
   "additional_evidence_needed": "..." | null,
-  "cost_estimate_usd": 0.04
+  "cost_estimate_usd": 0.04,
+  "decision_subtype_extras": {
+    "brand_role":   "parent" | "subsidiary" | "sister" | "divested" | "dba_only" | null,
+    "event_type":   "rebrand" | "legal_rename" | "acquisition" | "merger" | "spinoff"
+                  | "cert_surrender" | "cert_revocation" | "dissolution" | "formation"
+                  | "aoc_change" | null,
+    "intended_event_type": "<free text if you wanted an event_type outside the 10 above>" | null
+  }
 }
 
-ANTI-HALLUCINATION RULES (violations cause the orchestrator to mark this run failed):
+For decision_subtype='subsidiary_of_canonical', populate brand_role.
+For decision_subtype='rebrand_to_canonical', populate event_type.
+If you wanted to express an event the 10-enum doesn't cover (e.g.
+billing_reroute, shell_mask), set event_type to the closest enum match
+AND populate intended_event_type with your free-text label. The
+post-hoc analysis decides whether to extend the enum.
+
+═══════════════════════════════════════════════════════════════════════
+ANTI-HALLUCINATION RULES (violations cause this run to be marked failed)
+═══════════════════════════════════════════════════════════════════════
 - Every URL in "verbatim_quotes" MUST exactly match a URL in "firecrawl_urls_fetched".
-- Each quote MUST be a byte-exact substring of the scraped markdown content. Do NOT
-  strip whitespace, NOT remove markdown formatting (===, ##, **, ---, etc.), NOT
-  trim newlines, NOT replace special characters. Copy bytes verbatim from the
-  Firecrawl markdown response into the quote string. The driver validates with
-  String.includes (substring match), not regex — there is no fuzziness.
-- "firecrawl_pages" MUST include the actual scraped markdown content for each cited
-  URL, so the driver can verify your quotes substring-match. Truncate each page to
-  <30000 chars (keep the first 30000). The "url" field in firecrawl_pages MUST
-  exactly equal the URL passed to firecrawl_scrape.
-- For decision='match' or 'new_entity', citations must come from at least 2 DISTINCT
-  domains (hostnames). Two pages from the same hostname count as 1 source.
-- verbatim_quotes MUST contain AT LEAST ONE quote from EACH hostname you are using
-  to support your decision. If you scraped 2 supporting domains, you need at least
-  2 quotes (one per domain). Three quotes all from domain A and zero from domain B
-  fails the Two-Source check, even if domain B is in firecrawl_urls_fetched.
-- If you cannot find ≥2 independent sources, return decision='ambiguous' with
-  "additional_evidence_needed" filled. Do not fabricate.
+- Each quote MUST be a byte-exact substring of the scraped markdown content.
+  Do NOT strip whitespace, NOT remove markdown formatting (===, ##, **, ---),
+  NOT trim newlines, NOT replace special characters. Copy bytes verbatim
+  from the Firecrawl response. The driver validates with String.includes
+  (substring match), not regex — no fuzziness.
+- "firecrawl_pages" MUST include the actual scraped markdown content for
+  each cited URL. Truncate each page to <30000 chars (keep the first 30000).
+  The "url" field in firecrawl_pages MUST exactly equal the URL passed to
+  firecrawl_scrape.
+- For decision='match' or 'new_entity', citations must come from at least
+  2 DISTINCT SOURCE BUCKETS per the bucket map above. Two pages from the
+  same hostname count as one bucket; two pages from sister authorities
+  (faa.gov + registry.faa.gov) count as one bucket; aggregators
+  collectively count as one bucket.
+- verbatim_quotes MUST contain AT LEAST ONE quote from EACH bucket you are
+  using to support your decision. If you scraped Tier-1 + operator-self,
+  you need at least 2 quotes (one per bucket).
+- If you cannot find ≥2 independent buckets, return decision='ambiguous'
+  with "additional_evidence_needed" filled. Do NOT fabricate a second source.
 - If Firecrawl returns errors or empty content for all attempts, return
   decision='error' with the error in "reasoning".
-- Do NOT use prior knowledge (training data) as the sole basis for any claim.
-  Every claim must trace to a Firecrawl-fetched quote.
+- Do NOT use prior knowledge (training data) as the sole basis for any
+  claim. Every claim must trace to a Firecrawl-fetched quote.
+- CONFIDENCE is your subjective probability that the decision is correct;
+  the driver caps the persisted value at ${CONFIDENCE_POST_CAP} regardless.
 
-JSON ENCODING RULE: the response you produce MUST be syntactically valid JSON.
-Markdown content in firecrawl_pages and verbatim_quotes contains literal " chars,
-backslashes, and newlines. These MUST be JSON-escaped: " -> \\", \\ -> \\\\,
-newline -> \\n, tab -> \\t. The orchestrator runs JSON.parse on your output; any
-unescaped quote in any string value will fail with "Expecting , delimiter" and
-cause the run to be marked failed. Use JSON.stringify semantics when constructing
-the response — do not hand-write JSON.`;
+═══════════════════════════════════════════════════════════════════════
+JSON ENCODING RULE
+═══════════════════════════════════════════════════════════════════════
+The response MUST be syntactically valid JSON. Markdown content contains
+literal " chars, backslashes, and newlines — these MUST be JSON-escaped:
+" → \\", \\ → \\\\, newline → \\n, tab → \\t. The orchestrator runs
+JSON.parse; any unescaped quote will fail and mark the run failed. Use
+JSON.stringify semantics when constructing the response — do not
+hand-write JSON.`;
 }
 
 // ── Top-K candidate loader ────────────────────────────────────────────────
@@ -1069,6 +1263,29 @@ async function runClaimNext(args: Args): Promise<void> {
     const inserted = await bootstrapCheckpointRows(client);
     if (inserted > 0) {
       console.error(`[claim-next] bootstrapped ${inserted} new checkpoint rows`);
+    }
+
+    // --cost-cap=N enforcement (Session B). Halt if total cost across
+    // completed/committed rows ≥ cap. Counts ALL rows, not just this run —
+    // cumulative budget across the LLM ER pass.
+    if (args.costCap !== null) {
+      const costRes = await client.query<{ total: number | null }>(
+        `SELECT COALESCE(SUM(cost_estimate_usd), 0)::float8 AS total
+           FROM public.operator_llm_er_checkpoint
+          WHERE status IN ('completed', 'committed')`,
+      );
+      const totalSpent = Number(costRes.rows[0]?.total ?? 0);
+      if (totalSpent >= args.costCap) {
+        console.log(
+          JSON.stringify({
+            empty: true,
+            halted_by_cost_cap: true,
+            cost_cap_usd: args.costCap,
+            total_spent_usd: totalSpent,
+          }),
+        );
+        return;
+      }
     }
 
     let claimed: CheckpointRow | null;
@@ -1518,6 +1735,21 @@ async function runCommit(args: Args): Promise<void> {
     let skipped = 0;
 
     for (const cp of completedRows.rows) {
+      // --checkpoint-every=N enforcement (Session B). Halt after N rows
+      // committed in this run. Counts only auto-approved (committed)
+      // rows, not surfaced or skipped — the gate is for HUMAN review of
+      // canonical writes, not the surfaced-for-review queue.
+      if (
+        args.checkpointEvery !== null &&
+        autoApproved >= args.checkpointEvery
+      ) {
+        console.log(
+          `\n[llm-er-pass] HALT: --checkpoint-every=${args.checkpointEvery} reached. ` +
+            `${autoApproved} rows committed this run; ${completedRows.rowCount! - autoApproved - surfaced - skipped} `+
+            `unprocessed completed rows remain. Re-run --commit to continue.`,
+        );
+        break;
+      }
       const reasons: string[] = [];
 
       if (cp.llm_decision === "ambiguous" || cp.llm_decision === "error") {
@@ -1740,6 +1972,130 @@ async function commitToCanonical(
             AND resolved_at IS NULL`,
         [certId, holderNormalized, targetId],
       );
+
+      // 5) Stage 5 — preserve structural relationship for non-exact-alias
+      //    subtypes. Per docs/plans/llm-er-pass-design.md §"Output
+      //    categories", subsidiary_of_canonical and rebrand_to_canonical
+      //    each get a parallel write to the corresponding _pending sidecar
+      //    so the structure survives the alias-flattening above.
+      const extras = (cp.llm_evidence?.["decision_subtype_extras"] ?? {}) as Record<
+        string,
+        unknown
+      >;
+
+      if (cp.llm_decision_subtype === "subsidiary_of_canonical") {
+        const brandRole = (extras["brand_role"] as string | undefined) ?? "subsidiary";
+        const validRoles = new Set(["parent", "subsidiary", "sister", "divested", "dba_only"]);
+        const role = validRoles.has(brandRole) ? brandRole : "subsidiary";
+
+        // Find-or-create the brand_group keyed on the canonical operator.
+        const brandLookup = await client.query<{ canonical_name: string }>(
+          `SELECT canonical_name FROM public.operators WHERE id = $1::uuid`,
+          [targetId],
+        );
+        if (brandLookup.rowCount && brandLookup.rowCount > 0) {
+          const brandName = brandLookup.rows[0]!.canonical_name;
+          const brandNameNormalized = normalizeName(brandName).toLowerCase();
+          const brandGroupRes = await client.query<{ brand_group_id: string }>(
+            `INSERT INTO canonical.brand_groups
+               (brand_name, brand_name_normalized, primary_operator_id, source,
+                source_url, source_timestamp, confidence, evidence,
+                natural_key)
+             VALUES ($1, $2, $3::uuid, 'llm_firecrawl_research',
+                     NULL, NULL, 0.95, $4::jsonb,
+                     $5)
+             ON CONFLICT (brand_name_normalized) DO UPDATE
+               SET last_updated_at = NOW()
+             RETURNING brand_group_id::text`,
+            [
+              brandName,
+              brandNameNormalized,
+              targetId,
+              JSON.stringify({
+                ...evidenceJsonb,
+                created_via: "llm_subsidiary_of_canonical_finding",
+              }),
+              `llm_brand_group_${brandNameNormalized}`,
+            ],
+          );
+          const brandGroupId = brandGroupRes.rows[0]!.brand_group_id;
+
+          // Write brand_membership_pending. operator side is text-only —
+          // we don't create a new public.operators row for the subsidiary
+          // (the alias write above flattens it). The pending row preserves
+          // the structural claim until a future second source corroborates.
+          await client.query(
+            `INSERT INTO canonical.brand_membership_pending
+               (operator_name_as_provided, operator_name_normalized,
+                brand_group_id, role, valid_from, valid_to,
+                source, source_url, source_timestamp, evidence, reason)
+             VALUES ($1, $2, $3::uuid, $4, COALESCE($5::date, CURRENT_DATE), $6::date,
+                     'llm_firecrawl_research', NULL, NULL, $7::jsonb,
+                     'single_source_brand_finding')`,
+            [
+              holderProvided,
+              holderNormalized,
+              brandGroupId,
+              role,
+              validFrom,
+              validTo,
+              JSON.stringify({
+                ...evidenceJsonb,
+                brand_role: role,
+                target_operator_id: targetId,
+                source_review_id: cp.input_review_id,
+              }),
+            ],
+          );
+        }
+      } else if (cp.llm_decision_subtype === "rebrand_to_canonical") {
+        const eventType = (extras["event_type"] as string | undefined) ?? "rebrand";
+        const validEventTypes = new Set([
+          "rebrand", "legal_rename", "acquisition", "merger", "spinoff",
+          "cert_surrender", "cert_revocation", "dissolution", "formation",
+          "aoc_change",
+        ]);
+        const safeEventType = validEventTypes.has(eventType) ? eventType : "rebrand";
+        const intendedEventType =
+          (extras["intended_event_type"] as string | undefined) ?? null;
+
+        // Write operator_event_pending. predecessor side is text-only
+        // (the scraped name doesn't have a canonical row); successor is
+        // the LLM-chosen target. event_date is the cert valid_from as a
+        // proxy for "when the rebrand became effective" — best-effort.
+        await client.query(
+          `INSERT INTO canonical.operator_event_pending
+             (event_type, event_date,
+              successor_id, predecessor_name, successor_name,
+              source, source_url, source_timestamp, confidence, evidence,
+              reason, natural_key)
+           SELECT
+             $1::text, COALESCE($2::date, CURRENT_DATE),
+             $3::uuid, $4, (SELECT canonical_name FROM public.operators WHERE id = $3::uuid),
+             'llm_firecrawl_research', NULL, NULL, $5::numeric, $6::jsonb,
+             'single_source_event_finding',
+             $7
+           WHERE NOT EXISTS (
+             SELECT 1 FROM canonical.operator_event_pending
+              WHERE natural_key = $7
+           )`,
+          [
+            safeEventType,
+            validFrom,
+            targetId,
+            holderProvided,
+            cappedConfidence,
+            JSON.stringify({
+              ...evidenceJsonb,
+              event_type_emitted: safeEventType,
+              intended_event_type: intendedEventType,
+              source_review_id: cp.input_review_id,
+              cert_designator: certDesignator,
+            }),
+            `llm_rebrand_${cp.input_review_id}_${targetId}`,
+          ],
+        );
+      }
     } else if (cp.llm_decision === "new_entity") {
       // Phase 1 may have already created an operator with this normalized
       // name. Reuse if present; otherwise seed anew.
