@@ -152,6 +152,26 @@ const SOURCE_BUCKETS = new Map<string, string>([
   ["loudhawk.com", "tier3_aggregator"],
   ["en.wikipedia.org", "tier3_aggregator"],
   ["wikipedia.org", "tier3_aggregator"],
+  // Aviation business-data aggregators surfaced by V4 manual Perplexity
+  // test on Keystone Aviation. All collectively share the tier3
+  // aggregator bucket — pairing two of these does NOT satisfy
+  // Two-Source Rule.
+  ["pjsgroup.com", "tier3_aggregator"],
+  ["www.pjsgroup.com", "tier3_aggregator"],
+  ["airport-technology.com", "tier3_aggregator"],
+  ["www.airport-technology.com", "tier3_aggregator"],
+  ["privatejetcardcomparisons.com", "tier3_aggregator"],
+  ["www.privatejetcardcomparisons.com", "tier3_aggregator"],
+  ["aviapages.com", "tier3_aggregator"],
+  ["www.aviapages.com", "tier3_aggregator"],
+  ["thecompanycheck.com", "tier3_aggregator"],
+  ["www.thecompanycheck.com", "tier3_aggregator"],
+  ["flightaware.com", "tier3_aggregator"],
+  ["www.flightaware.com", "tier3_aggregator"],
+  ["jetvip.com", "tier3_aggregator"],
+  ["www.jetvip.com", "tier3_aggregator"],
+  ["pinnacle.aero", "tier3_aggregator"],
+  ["www.pinnacle.aero", "tier3_aggregator"],
 ]);
 
 /**
