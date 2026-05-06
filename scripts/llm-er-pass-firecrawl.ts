@@ -817,13 +817,16 @@ is a brand-member (subsidiary/sister) of one, represents a structural
 event (rebrand/M&A/cert lifecycle), is a genuinely new entity, or
 requires human review.
 
-PROMPT VERSION: V3.2 (Cohort A — FAA holder-name-vs-canonical task,
+PROMPT VERSION: V4 (Cohort A — FAA holder-name-vs-canonical task,
 Session B per docs/plans/llm-er-pass-design.md)
   V3   = base 6-section structure + F1-F4+F6 + worked examples
   V3.1 = added F7 successor-not-in-pool + PRE-SUBMISSION SELF-CHECK
   V3.2 = added Tier 1 search-then-scrape workflow,
          regulations.gov / DOT bucket (tier1_dot),
          tightened F7 to require verbatim quote naming successor
+  V4   = Perplexity discovery (firecrawl_search → perplexity_search),
+         same-name disambiguation guidance using cert designator
+         + jurisdiction from the input record
 
 ═══════════════════════════════════════════════════════════════════════
 INPUT RECORD — operator name from FAA Part 135 records
@@ -856,35 +859,46 @@ Spend them in tier order:
     share ONE Two-Source bucket — pairing two of them does NOT satisfy
     the Two-Source Rule.
 
-Tier 1 research workflow — REQUIRED for hard cases (rebrands, M&A,
-defunct certs, name ambiguity). Direct-URL guessing fails when the
-authoritative source's URL structure isn't predictable:
+═══════════════════════════════════════════════════════════════════════
+RESEARCH WORKFLOW — Perplexity for discovery, Firecrawl for scrape
+═══════════════════════════════════════════════════════════════════════
 
-  a. firecrawl_search('<holder name> + cert/rebrand/M&A')
-     Use multiple query variants if the first returns thin results,
-     e.g. '<holder name> FAA Part 135', '<holder name> acquisition',
-     '<holder name> Elevate Jet' (or whatever successor name surfaces).
-  b. From search results, identify Tier 1 URLs (faa.gov, sec.gov,
-     ntsb.gov, regulations.gov DOT filings, etc.) and Tier 2 URLs
-     (the operator's own site).
-  c. firecrawl_scrape those URLs to capture verbatim quotes. The
-     scraped page is what counts — not the search snippet.
-  d. Citation validation requires verbatim quotes from SCRAPED pages.
-     Search snippets are NOT valid citations on their own — even if
-     the snippet is correct, you must scrape the full page and quote
-     from the scraped content. The driver's substring check runs
-     against firecrawl_pages[].content, not search snippets.
+Step 1: perplexity_search('<HOLDER NAME exactly as provided>')
 
-If a Tier 1 source like av-info.faa.gov returns 503/timeout, fall
-back to other Tier 1 (regulations.gov, sec.gov) before tier 2/3.
-Don't skip Tier 1 entirely just because one URL failed.
+  Just the name. No qualifiers like "rebrand", "acquisition", or
+  "cert" — those pre-suppose the answer and bias the search.
+  Perplexity returns up to 10 ranked results with URL + title +
+  snippet + date.
 
-NOTE: Tier 1 success does NOT terminate the research. The Two-Source
-Rule requires citations from ≥2 distinct buckets regardless of which
-tier you started with. After Tier 1 resolves the question, fetch ONE
-more page from a different bucket (Tier 2 operator-self or a Tier 3
-aggregator) to satisfy the rule. If a second bucket can't be found,
-return ambiguous.
+  If results are thin (operator name too generic OR multiple
+  unrelated entities share the name), retry ONCE with
+  disambiguating context from the input record:
+    perplexity_search('<HOLDER NAME> <jurisdiction OR cert designator>')
+  e.g. perplexity_search('Keystone Aviation, LLC Salt Lake City')
+       or perplexity_search('Keystone Aviation, LLC B8MA')
+
+Step 2: Read Perplexity's results. Identify URLs by bucket using
+  titles + snippets:
+    - Tier 1 (faa.gov, sec.gov, regulations.gov, ntsb.gov)
+    - Tier 2 (operator's own website — usually first or second
+      result for a real operator)
+    - Tier 3 (aggregators: AIN, BJT, Wikipedia, aviation press,
+      business-data sites)
+
+  Same-name disambiguation: if multiple entities share the holder
+  name, use the input record's cert designator + jurisdiction to
+  identify which search results match the actual subject. Discard
+  URLs about unrelated same-name entities — they are not citations.
+
+Step 3: firecrawl_scrape 2-4 URLs covering ≥2 distinct buckets.
+  The Perplexity snippet is signal for which URL to pick — but
+  the verbatim quote MUST come from the scraped page, not the
+  Perplexity snippet.
+
+Step 4: Capture verbatim quotes from SCRAPED markdown content.
+  Search snippets are not citation sources.
+
+Step 5: Two-Source Rule check before emitting.
 
 ═══════════════════════════════════════════════════════════════════════
 DECISION TASK — emit ONE decision per record
