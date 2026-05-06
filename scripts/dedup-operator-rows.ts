@@ -8,18 +8,40 @@
  * human confirms they're the same entity.
  *
  * Safe sequence (all inside one transaction):
- *   1. UPDATE operator_aliases       SET operator_id = KEEP WHERE operator_id = MERGE
- *   2. UPDATE operator_identities    SET operator_id = KEEP WHERE operator_id = MERGE
+ *   1. UPDATE operator_aliases                            SET operator_id = KEEP WHERE operator_id = MERGE
+ *   2. UPDATE operator_identities                         SET operator_id = KEEP WHERE operator_id = MERGE
  *      (UNIQUE (source, source_id) is table-global, so no conflict is
  *      possible — two canonical rows can't already share the same pair.)
- *   3. UPDATE operator_match_review  SET resolution_operator_id = KEEP
- *                                    WHERE resolution_operator_id = MERGE
- *   4. DELETE FROM operators WHERE id = MERGE
+ *   3. UPDATE operator_match_review                       SET resolution_operator_id = KEEP
+ *                                                         WHERE resolution_operator_id = MERGE
+ *   4. UPDATE canonical.operator_holds_certificate        SET operator_id = KEEP WHERE operator_id = MERGE
+ *   5. UPDATE canonical.operator_aircraft_link            SET operator_id = KEEP WHERE operator_id = MERGE
+ *   6. UPDATE canonical.operator_aircraft_resolution_log  SET operator_id = KEEP WHERE operator_id = MERGE
+ *   7. DELETE FROM operators WHERE id = MERGE
  *
  * Aliases + identities have ON DELETE CASCADE; re-pointing *before* the
  * DELETE is mandatory, or the children get wiped instead of moved.
  * resolution_operator_id is NO ACTION so the DELETE would hard-fail
- * without step 3.
+ * without step 3. The three canonical-schema FKs use ON DELETE RESTRICT
+ * (ohc, oal) and ON DELETE SET NULL (resolution_log); the DELETE in step 7
+ * would FK-violate or null out resolution_log rows without steps 4–6.
+ *
+ * EXCLUDE-constraint conflicts: ohc has `(operator_id, cert_id, role,
+ * daterange) WITH &&` and oal has `(aircraft_id, role, daterange) WITH &&`.
+ * If both keep and merge already hold conflicting rows on the same key
+ * with overlapping windows, the UPDATE will abort the transaction —
+ * surface the conflict, do not silently merge.
+ *
+ * KNOWN GAP — additional FK columns not yet handled (all 0 rows in prod
+ * as of 2026-05-06; extend on first encounter of non-zero data):
+ *   - canonical.operator_holds_certificate_pending.resolved_to_operator_id
+ *   - canonical.operator_events.predecessor_id
+ *   - canonical.operator_events.successor_id
+ *   - canonical.operator_events.primary_operator_id
+ *   - canonical.operator_events.other_party_id
+ * All five reference operators(id) ON DELETE RESTRICT — the DELETE in
+ * step 7 will fail if any merge-side row exists in those tables, surfacing
+ * the missing repoint clearly rather than silently corrupting state.
  *
  * After commit, the survivor's trust scores are recomputed by shelling
  * out to `npm run operators:trust-scores -- --commit`. The survivor
@@ -73,6 +95,9 @@ export interface DedupCounts {
   aliases_repointed: number;
   identities_repointed: number;
   review_rows_repointed: number;
+  ohc_repointed: number;
+  oal_repointed: number;
+  resolution_log_repointed: number;
   merge_row_deleted: boolean;
 }
 
@@ -159,6 +184,9 @@ export async function dedupTransaction(
     aliases_repointed: 0,
     identities_repointed: 0,
     review_rows_repointed: 0,
+    ohc_repointed: 0,
+    oal_repointed: 0,
+    resolution_log_repointed: 0,
     merge_row_deleted: false,
   };
 
@@ -183,6 +211,30 @@ export async function dedupTransaction(
       [args.keep, args.merge],
     );
     counts.review_rows_repointed = reviewRes.rowCount ?? 0;
+
+    const ohcRes = await client.query(
+      `UPDATE canonical.operator_holds_certificate
+          SET operator_id = $1
+        WHERE operator_id = $2`,
+      [args.keep, args.merge],
+    );
+    counts.ohc_repointed = ohcRes.rowCount ?? 0;
+
+    const oalRes = await client.query(
+      `UPDATE canonical.operator_aircraft_link
+          SET operator_id = $1
+        WHERE operator_id = $2`,
+      [args.keep, args.merge],
+    );
+    counts.oal_repointed = oalRes.rowCount ?? 0;
+
+    const resLogRes = await client.query(
+      `UPDATE canonical.operator_aircraft_resolution_log
+          SET operator_id = $1
+        WHERE operator_id = $2`,
+      [args.keep, args.merge],
+    );
+    counts.resolution_log_repointed = resLogRes.rowCount ?? 0;
 
     const deleteRes = await client.query(
       `DELETE FROM operators WHERE id = $1`,
@@ -301,18 +353,27 @@ async function main(): Promise<void> {
         aliases: string;
         identities: string;
         review_rows: string;
+        ohc: string;
+        oal: string;
+        resolution_log: string;
       }>(
         `SELECT
            (SELECT COUNT(*)::TEXT FROM operator_aliases    WHERE operator_id = $1)           AS aliases,
            (SELECT COUNT(*)::TEXT FROM operator_identities WHERE operator_id = $1)           AS identities,
-           (SELECT COUNT(*)::TEXT FROM operator_match_review WHERE resolution_operator_id = $1) AS review_rows`,
+           (SELECT COUNT(*)::TEXT FROM operator_match_review WHERE resolution_operator_id = $1) AS review_rows,
+           (SELECT COUNT(*)::TEXT FROM canonical.operator_holds_certificate       WHERE operator_id = $1) AS ohc,
+           (SELECT COUNT(*)::TEXT FROM canonical.operator_aircraft_link           WHERE operator_id = $1) AS oal,
+           (SELECT COUNT(*)::TEXT FROM canonical.operator_aircraft_resolution_log WHERE operator_id = $1) AS resolution_log`,
         [args.merge],
       );
       const pre = dryPreview.rows[0]!;
       console.log(`\n[dedup] DRY RUN — would move:`);
-      console.log(`  operator_aliases:      ${pre.aliases}`);
-      console.log(`  operator_identities:   ${pre.identities}`);
-      console.log(`  operator_match_review: ${pre.review_rows}`);
+      console.log(`  operator_aliases:                            ${pre.aliases}`);
+      console.log(`  operator_identities:                         ${pre.identities}`);
+      console.log(`  operator_match_review:                       ${pre.review_rows}`);
+      console.log(`  canonical.operator_holds_certificate:        ${pre.ohc}`);
+      console.log(`  canonical.operator_aircraft_link:            ${pre.oal}`);
+      console.log(`  canonical.operator_aircraft_resolution_log:  ${pre.resolution_log}`);
       console.log(`\n[dedup] DELETE operators row ${args.merge} would follow.`);
       console.log(`[dedup] Re-run with --commit to apply.`);
       return;
@@ -321,10 +382,13 @@ async function main(): Promise<void> {
     console.log(`\n[dedup] Applying merge...`);
     const counts = await dedupTransaction(client, args);
     console.log(`\n[dedup] Done. Moved:`);
-    console.log(`  operator_aliases:      ${counts.aliases_repointed}`);
-    console.log(`  operator_identities:   ${counts.identities_repointed}`);
-    console.log(`  operator_match_review: ${counts.review_rows_repointed}`);
-    console.log(`  operators row deleted: ${counts.merge_row_deleted}`);
+    console.log(`  operator_aliases:                            ${counts.aliases_repointed}`);
+    console.log(`  operator_identities:                         ${counts.identities_repointed}`);
+    console.log(`  operator_match_review:                       ${counts.review_rows_repointed}`);
+    console.log(`  canonical.operator_holds_certificate:        ${counts.ohc_repointed}`);
+    console.log(`  canonical.operator_aircraft_link:            ${counts.oal_repointed}`);
+    console.log(`  canonical.operator_aircraft_resolution_log:  ${counts.resolution_log_repointed}`);
+    console.log(`  operators row deleted:                       ${counts.merge_row_deleted}`);
   } finally {
     client.release();
     await closePg();

@@ -124,6 +124,11 @@ describeIf("dedupTransaction — live FK migration (gated on SUPABASE_DATABASE_U
   const mergeId = randomUUID();
   const keepName = `dedup_test_keep_${testRunId}`;
   const mergeName = `dedup_test_merge_${testRunId}`;
+  // Throwaway canonical entities for FK targets. Set in beforeAll, used in
+  // the canonical-schema seeds and the afterAll cleanup.
+  let testAircraftId: string;
+  let testCertId: string;
+  const testRunTag = `dedup_test_${testRunId}`;
 
   beforeAll(async () => {
     client = await getPool().connect();
@@ -158,10 +163,69 @@ describeIf("dedupTransaction — live FK migration (gated on SUPABASE_DATABASE_U
        VALUES ($1, 'manual', '{}'::jsonb, 'matched', $2)`,
       [mergeName, mergeId],
     );
+
+    // Seed canonical-schema FK targets so the canonical UPDATE pass has
+    // something to repoint. Aircraft + cert are bare-minimum rows (only
+    // PK, defaults). The three operator-side rows point at MERGE so the
+    // assertion can verify they're moved to KEEP after dedup.
+    const aircraftRes = await client.query<{ aircraft_id: string }>(
+      `INSERT INTO canonical.aircraft DEFAULT VALUES RETURNING aircraft_id`,
+    );
+    testAircraftId = aircraftRes.rows[0]!.aircraft_id;
+
+    const certRes = await client.query<{ cert_id: string }>(
+      `INSERT INTO canonical.certificates DEFAULT VALUES RETURNING cert_id`,
+    );
+    testCertId = certRes.rows[0]!.cert_id;
+
+    await client.query(
+      `INSERT INTO canonical.operator_holds_certificate
+         (operator_id, cert_id, role, valid_from, source)
+       VALUES ($1, $2, 'holder_of_record', '2026-01-01'::DATE, $3)`,
+      [mergeId, testCertId, testRunTag],
+    );
+    await client.query(
+      `INSERT INTO canonical.operator_aircraft_link
+         (operator_id, aircraft_id, role, valid_from, source)
+       VALUES ($1, $2, 'operator', '2026-01-01'::DATE, $3)`,
+      [mergeId, testAircraftId, testRunTag],
+    );
+    await client.query(
+      `INSERT INTO canonical.operator_aircraft_resolution_log
+         (aircraft_id, resolver_action, operator_id, backfill_run_id)
+       VALUES ($1, 'matched', $2, $3)`,
+      [testAircraftId, mergeId, testRunTag],
+    );
   });
 
   afterAll(async () => {
-    // Clean up whatever survives, ignore missing rows.
+    // Order matters: canonical FK children → operator_match_review → operators.
+    // ohc and oal are ON DELETE RESTRICT, so the operators DELETE will fail
+    // unless we drop the canonical rows first. resolution_log is ON DELETE
+    // SET NULL but we delete it explicitly for cleanliness.
+    await client.query(
+      `DELETE FROM canonical.operator_aircraft_resolution_log
+        WHERE backfill_run_id = $1`,
+      [testRunTag],
+    ).catch(() => undefined);
+    await client.query(
+      `DELETE FROM canonical.operator_aircraft_link
+        WHERE operator_id = ANY($1::UUID[])`,
+      [[keepId, mergeId]],
+    ).catch(() => undefined);
+    await client.query(
+      `DELETE FROM canonical.operator_holds_certificate
+        WHERE operator_id = ANY($1::UUID[])`,
+      [[keepId, mergeId]],
+    ).catch(() => undefined);
+    await client.query(
+      `DELETE FROM canonical.aircraft WHERE aircraft_id = $1`,
+      [testAircraftId],
+    ).catch(() => undefined);
+    await client.query(
+      `DELETE FROM canonical.certificates WHERE cert_id = $1`,
+      [testCertId],
+    ).catch(() => undefined);
     await client.query(
       `DELETE FROM operator_match_review
         WHERE scraped_name IN ($1, $2)`,
@@ -186,6 +250,9 @@ describeIf("dedupTransaction — live FK migration (gated on SUPABASE_DATABASE_U
     expect(counts.aliases_repointed).toBe(1);
     expect(counts.identities_repointed).toBe(1);
     expect(counts.review_rows_repointed).toBe(1);
+    expect(counts.ohc_repointed).toBe(1);
+    expect(counts.oal_repointed).toBe(1);
+    expect(counts.resolution_log_repointed).toBe(1);
     expect(counts.merge_row_deleted).toBe(true);
 
     // After dedup, all FKs point at keep.
@@ -207,12 +274,49 @@ describeIf("dedupTransaction — live FK migration (gated on SUPABASE_DATABASE_U
     );
     expect(Number(reviewRes.rows[0]?.c)).toBe(1);
 
+    const ohcRes = await client.query<{ c: string }>(
+      `SELECT COUNT(*)::TEXT AS c FROM canonical.operator_holds_certificate
+         WHERE operator_id = $1 AND source = $2`,
+      [keepId, testRunTag],
+    );
+    expect(Number(ohcRes.rows[0]?.c)).toBe(1);
+
+    const oalRes = await client.query<{ c: string }>(
+      `SELECT COUNT(*)::TEXT AS c FROM canonical.operator_aircraft_link
+         WHERE operator_id = $1 AND source = $2`,
+      [keepId, testRunTag],
+    );
+    expect(Number(oalRes.rows[0]?.c)).toBe(1);
+
+    const resLogRes = await client.query<{ c: string }>(
+      `SELECT COUNT(*)::TEXT AS c FROM canonical.operator_aircraft_resolution_log
+         WHERE operator_id = $1 AND backfill_run_id = $2`,
+      [keepId, testRunTag],
+    );
+    expect(Number(resLogRes.rows[0]?.c)).toBe(1);
+
     // Merge row is gone.
     const mergeRes = await client.query<{ c: string }>(
       `SELECT COUNT(*)::TEXT AS c FROM operators WHERE id = $1`,
       [mergeId],
     );
     expect(Number(mergeRes.rows[0]?.c)).toBe(0);
+
+    // No leftover rows pointing at the merged-out id in any of the three
+    // canonical tables (catches a regression where the UPDATE silently
+    // missed a row).
+    const orphanRes = await client.query<{
+      ohc: string; oal: string; reslog: string;
+    }>(
+      `SELECT
+         (SELECT COUNT(*)::TEXT FROM canonical.operator_holds_certificate       WHERE operator_id = $1) AS ohc,
+         (SELECT COUNT(*)::TEXT FROM canonical.operator_aircraft_link           WHERE operator_id = $1) AS oal,
+         (SELECT COUNT(*)::TEXT FROM canonical.operator_aircraft_resolution_log WHERE operator_id = $1) AS reslog`,
+      [mergeId],
+    );
+    expect(Number(orphanRes.rows[0]?.ohc)).toBe(0);
+    expect(Number(orphanRes.rows[0]?.oal)).toBe(0);
+    expect(Number(orphanRes.rows[0]?.reslog)).toBe(0);
   });
 
   it("preserves the survivor's metadata — no field merge from the duplicate row", async () => {
