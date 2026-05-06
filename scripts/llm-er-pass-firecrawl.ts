@@ -905,6 +905,16 @@ F6. Single-source corroboration gap.
     Two-Source Rule applies regardless of source quality. Pair Tier-1 with
     operator-self or another Tier-1 from a different authority.
 
+F7. Successor exists in real world but not in candidate pool.
+    If you find evidence of a rebrand/M&A/acquisition where the SUCCESSOR
+    entity exists but isn't a candidate in this case → return AMBIGUOUS
+    with reasoning='successor_not_in_canonical_pool' and
+    additional_evidence_needed='await canonical entry for <successor name>'.
+    Do NOT force-fit the predecessor under a non-successor canonical
+    operator just because they share a name fragment. Specifically, do
+    NOT use subsidiary_of_canonical as a workaround for a missing rebrand
+    target — that mis-shapes the structural data.
+
 ═══════════════════════════════════════════════════════════════════════
 WORKED EXAMPLES — five compact decisions illustrating the schema
 ═══════════════════════════════════════════════════════════════════════
@@ -1067,6 +1077,59 @@ ANTI-HALLUCINATION RULES (violations cause this run to be marked failed)
   claim. Every claim must trace to a Firecrawl-fetched quote.
 - CONFIDENCE is your subjective probability that the decision is correct;
   the driver caps the persisted value at ${CONFIDENCE_POST_CAP} regardless.
+
+═══════════════════════════════════════════════════════════════════════
+PRE-SUBMISSION SELF-CHECK — verify before emitting JSON
+═══════════════════════════════════════════════════════════════════════
+Before submitting your response, walk through this checklist line by
+line. Most validation failures come from skipping this step.
+
+1. Citation URL membership. For EACH entry in verbatim_quotes, verify
+   the .url string appears character-for-character in
+   firecrawl_urls_fetched. If a URL doesn't appear there, you didn't
+   fetch it — REMOVE that quote, OR fetch the URL via Firecrawl first
+   and add it to firecrawl_urls_fetched + firecrawl_pages. Do NOT keep
+   a citation whose URL you didn't actually fetch — knowing a URL
+   exists from search results is not the same as fetching it.
+
+2. Quote substring. For EACH entry in verbatim_quotes, verify the
+   .quote string is a byte-exact substring of the corresponding
+   firecrawl_pages[].content. Any whitespace stripping, formatting
+   changes (### → ##, **bold** → bold), newline replacement, or
+   paraphrase will fail validation.
+
+3. Subtype-extras co-population. The decision_subtype_extras object
+   has strict shape rules:
+     - decision_subtype = 'subsidiary_of_canonical'
+       → brand_role MUST be populated (parent/subsidiary/sister/divested/dba_only)
+       → event_type MUST be null
+       → intended_event_type MUST be null
+     - decision_subtype = 'rebrand_to_canonical'
+       → event_type MUST be populated (one of the 10 enum values)
+       → brand_role MUST be null
+       → intended_event_type populated only if you wanted an out-of-enum type
+     - decision_subtype IN {'exact_alias', 'distinct_legal_entity', 'distinct_brand'}
+       → BOTH brand_role and event_type MUST be null
+       → intended_event_type MUST be null
+   Co-populating brand_role AND event_type for the same decision is
+   ALWAYS wrong — choose one subtype.
+
+4. Bucket count. Count distinct buckets across verbatim_quotes per
+   the bucket map. For decision='match' or 'new_entity', the count
+   MUST be ≥ 2. If you have only 1 bucket, change decision to
+   'ambiguous' (or fetch a second-bucket source).
+
+5. Decision target.
+   - decision='match' → decision_target_operator_id MUST be a UUID
+     from the CANDIDATE CANONICAL OPERATORS list above (not a UUID
+     you researched separately).
+   - decision='new_entity' / 'ambiguous' / 'error' →
+     decision_target_operator_id MUST be null.
+
+If any check fails, fix the response BEFORE emitting the JSON.
+Do not emit, get a validation error, and rely on retry — the retry
+budget is for genuine research issues, not for re-running this
+checklist.
 
 ═══════════════════════════════════════════════════════════════════════
 JSON ENCODING RULE
