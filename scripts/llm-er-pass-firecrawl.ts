@@ -822,6 +822,13 @@ Spend them in tier order:
     share ONE Two-Source bucket — pairing two of them does NOT satisfy
     the Two-Source Rule.
 
+NOTE: Tier 1 success does NOT terminate the research. The Two-Source
+Rule requires citations from ≥2 distinct buckets regardless of which
+tier you started with. After Tier 1 resolves the question, fetch ONE
+more page from a different bucket (Tier 2 operator-self or a Tier 3
+aggregator) to satisfy the rule. If a second bucket can't be found,
+return ambiguous.
+
 ═══════════════════════════════════════════════════════════════════════
 DECISION TASK — emit ONE decision per record
 ═══════════════════════════════════════════════════════════════════════
@@ -897,6 +904,99 @@ F6. Single-source corroboration gap.
     A strong Tier-1 source alone is NOT enough for a non-ambiguous decision.
     Two-Source Rule applies regardless of source quality. Pair Tier-1 with
     operator-self or another Tier-1 from a different authority.
+
+═══════════════════════════════════════════════════════════════════════
+WORKED EXAMPLES — five compact decisions illustrating the schema
+═══════════════════════════════════════════════════════════════════════
+Read these to calibrate decision_subtype + decision_subtype_extras
+field usage. UUIDs are placeholders — at runtime use real candidate
+operator_ids from the CANDIDATE CANONICAL OPERATORS section above.
+
+EX1. Subsidiary LLC matching parent brand (F3 pattern):
+  HOLDER NAME: "Wheels Up Partners LLC"
+  Top candidate: "Wheels Up" (id=aaaaaaaa-1111-...)
+  Output:
+    {
+      "decision": "match",
+      "decision_target_operator_id": "aaaaaaaa-1111-...",
+      "decision_subtype": "subsidiary_of_canonical",
+      "decision_subtype_extras": {
+        "brand_role": "subsidiary",
+        "event_type": null,
+        "intended_event_type": null
+      },
+      ... (citations + reasoning)
+    }
+
+EX2. DBA brand under a parent operator:
+  HOLDER NAME: "Citation Air by NetJets"
+  Top candidate: "NetJets" (id=bbbbbbbb-2222-...)
+  Output:
+    {
+      "decision": "match",
+      "decision_target_operator_id": "bbbbbbbb-2222-...",
+      "decision_subtype": "subsidiary_of_canonical",
+      "decision_subtype_extras": {
+        "brand_role": "dba_only",
+        "event_type": null,
+        "intended_event_type": null
+      },
+      ... (citations + reasoning)
+    }
+
+EX3. Rebrand to canonical successor:
+  HOLDER NAME: "TMC Jets" (former name)
+  Top candidate: "Wheels Up Partners" (id=cccccccc-3333-...)
+  Output:
+    {
+      "decision": "match",
+      "decision_target_operator_id": "cccccccc-3333-...",
+      "decision_subtype": "rebrand_to_canonical",
+      "decision_subtype_extras": {
+        "brand_role": null,
+        "event_type": "rebrand",
+        "intended_event_type": null
+      },
+      ... (citations + reasoning, evidence: cert_designator persists across rebrand)
+    }
+
+EX4. Defunct operator with revoked cert linked to canonical successor (F4):
+  HOLDER NAME: "Acme Air LLC" (FAA registry shows cert REVOKED 2024)
+  Top candidate: "Acme Aviation" (id=dddddddd-4444-..., the survivor entity that absorbed the fleet)
+  Output:
+    {
+      "decision": "match",
+      "decision_target_operator_id": "dddddddd-4444-...",
+      "decision_subtype": "rebrand_to_canonical",
+      "decision_subtype_extras": {
+        "brand_role": null,
+        "event_type": "cert_revocation",
+        "intended_event_type": null
+      },
+      ... (citations: faa.gov registry showing revoked status, plus aggregator confirming Acme Aviation as successor)
+    }
+
+EX5. Subtypes that need NO extras (exact_alias, distinct_legal_entity, distinct_brand):
+  HOLDER NAME: "Acme Aviation Inc"
+  Top candidate: "Acme Aviation" (id=eeeeeeee-5555-...)
+  Output:
+    {
+      "decision": "match",
+      "decision_target_operator_id": "eeeeeeee-5555-...",
+      "decision_subtype": "exact_alias",
+      "decision_subtype_extras": {
+        "brand_role": null,
+        "event_type": null,
+        "intended_event_type": null
+      },
+      ... (citations + reasoning)
+    }
+
+  Same null-extras shape applies to NEW_ENTITY decisions:
+    decision_subtype = "distinct_legal_entity" (domestic operator not in canonical)
+    decision_subtype = "distinct_brand"        (foreign operator or new brand)
+  In both cases, decision_target_operator_id = null and brand_role +
+  event_type are null.
 
 ═══════════════════════════════════════════════════════════════════════
 OUTPUT FORMAT — VALID JSON, NO COMMENTARY OUTSIDE THE JSON
@@ -2044,6 +2144,7 @@ async function commitToCanonical(
                 brand_role: role,
                 target_operator_id: targetId,
                 source_review_id: cp.input_review_id,
+                architectural_status: "provisional_parallel_write_cohort_a",
               }),
             ],
           );
@@ -2091,6 +2192,7 @@ async function commitToCanonical(
               intended_event_type: intendedEventType,
               source_review_id: cp.input_review_id,
               cert_designator: certDesignator,
+              architectural_status: "provisional_parallel_write_cohort_a",
             }),
             `llm_rebrand_${cp.input_review_id}_${targetId}`,
           ],
