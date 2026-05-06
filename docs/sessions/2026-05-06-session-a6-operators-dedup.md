@@ -153,10 +153,14 @@ matches a current canonical_name under the new normalization (LOWER + TRIM
 + collapse internal whitespace). These should auto-resolve cleanly on the
 next resolver run. Not auto-resolved this session — surface for visibility.
 
-The 293 `ambiguous_runner_up` rows called out in the A.5 close-out are a
-different cohort (Tier 2 score-gate downgrades, not exact-name matches);
-the count of those that would now auto-resolve requires a real resolver
-re-run, deferred to the next session.
+The 293 step2c_2026_05_01 rows from the A.5 close-out break down as
+129 `medium_name_only` + 84 `low_tier` + 71 `ambiguous_runner_up` + 9
+`gate_downgrade`. Of those, **5** would auto-resolve cleanly post-dedup —
+all 5 are `ambiguous_runner_up` cases where the runner-up was a deduped
+loser (omr ids 1955 JetRight, 1982 Flexjet, 2001 Tradewind, 2017 NetJets,
+2195 Thrive — each had two candidates with identical scores, one of which
+no longer exists). The remaining 288 are genuine entity resolution work
+that need LLM ER or human triage, not a resolver re-run.
 
 ## Operational notes
 
@@ -182,9 +186,12 @@ showing byte-level dumps.
 
 - **471 NULL-typed operators remaining** — typing pass via cert /
   cross-source attestation. Session A.7 candidate.
-- **omr review reprocess** — 293 `ambiguous_runner_up` rows from the A.5
-  close-out should largely auto-resolve post-dedup. Re-run resolver next
-  session, surface the count delta, only then auto-resolve.
+- **omr review reprocess** — ~5 of the 293 step2c_2026_05_01 rows would
+  auto-resolve post-dedup (5 `ambiguous_runner_up` cases where the
+  runner-up was a deduped loser). The remaining 288 are genuine entity
+  resolution work — 129 `medium_name_only` + 84 `low_tier` + 66 genuinely
+  ambiguous + 9 `gate_downgrade` — and need LLM ER or human triage, not
+  a resolver re-run.
 - **Wheels Up subsidiary curation** — fleet attribution sits under DELUX
   PUBLIC CHARTER and other subsidiary canonical_names. Not on A.6 path.
 - **Source pipeline fix** — the loader on 2026-04-10 / 04-19 inserted
