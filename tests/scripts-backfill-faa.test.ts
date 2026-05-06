@@ -4,6 +4,8 @@ import {
   classifyFaaOperator,
   splitNewVsExisting,
   isRealOperatorCert,
+  normalizeCanonicalName,
+  splitNewByCanonicalNameMatch,
   type FaaOperatorRow,
 } from "../scripts/backfill-operators-canonical-faa.js";
 
@@ -100,5 +102,49 @@ describe("splitNewVsExisting", () => {
     const { newRows, updateCerts } = splitNewVsExisting(rows, new Set(["B2"]));
     expect(newRows.map((r) => r.certificate_number)).toEqual(["A1", "C3"]);
     expect(updateCerts).toEqual(["B2"]);
+  });
+});
+
+describe("normalizeCanonicalName", () => {
+  it("matches the UNIQUE index expression: lowercase, trim, collapse \\s+", () => {
+    expect(normalizeCanonicalName("NetJets Aviation")).toBe("netjets aviation");
+    expect(normalizeCanonicalName("  NetJets   Aviation  ")).toBe("netjets aviation");
+    expect(normalizeCanonicalName("netjets aviation")).toBe("netjets aviation");
+  });
+
+  it("collapses tabs and newlines into a single space", () => {
+    expect(normalizeCanonicalName("Net\tJets\nAviation")).toBe("net jets aviation");
+  });
+});
+
+describe("splitNewByCanonicalNameMatch", () => {
+  const base: FaaOperatorRow = {
+    certificate_number: "NETJ001",
+    name: "NetJets Aviation",
+    dba_name: null,
+    city: null,
+    state: null,
+    created_at: null,
+  };
+
+  it("routes rows with normalize-equal name to existsByName, others to trulyNew", () => {
+    const existing = new Map<string, string>([["netjets aviation", "op-existing"]]);
+    const rows: FaaOperatorRow[] = [
+      base,
+      { ...base, certificate_number: "FLEX001", name: "Flexjet" },
+      { ...base, certificate_number: "WHEE001", name: "  netjets   aviation  " },
+    ];
+    const { trulyNew, existsByName } = splitNewByCanonicalNameMatch(rows, existing);
+    expect(trulyNew).toHaveLength(1);
+    expect(trulyNew[0]!.certificate_number).toBe("FLEX001");
+    expect(existsByName).toHaveLength(2);
+    expect(existsByName.map((m) => m.operatorId)).toEqual(["op-existing", "op-existing"]);
+    expect(existsByName.map((m) => m.row.certificate_number)).toEqual(["NETJ001", "WHEE001"]);
+  });
+
+  it("returns everything in trulyNew when the existing map is empty", () => {
+    const { trulyNew, existsByName } = splitNewByCanonicalNameMatch([base], new Map());
+    expect(trulyNew).toHaveLength(1);
+    expect(existsByName).toHaveLength(0);
   });
 });

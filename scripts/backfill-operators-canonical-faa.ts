@@ -136,6 +136,43 @@ export function splitNewVsExisting(
   return { newRows, updateCerts };
 }
 
+/**
+ * Normalize a canonical name for cross-source matching. Mirrors the UNIQUE
+ * index installed in 2026-05-05-001-operators-canonical-name-unique-idx.sql:
+ *   LOWER(TRIM(REGEXP_REPLACE(canonical_name, '\s+', ' ', 'g')))
+ */
+export function normalizeCanonicalName(raw: string): string {
+  return raw.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/**
+ * Split bulk-insert candidates into rows that match an existing operator
+ * by normalized canonical_name (attach identity only — operators row already
+ * exists from a different source) versus rows that are net-new (operators +
+ * identity insert).
+ *
+ * Without this split, bulkInsertBatch would 23505 the UNIQUE index installed
+ * in 2026-05-05-001 when re-run on a name that's already present from a
+ * non-FAA source.
+ */
+export function splitNewByCanonicalNameMatch(
+  newRows: FaaOperatorRow[],
+  existingByNormName: ReadonlyMap<string, string>,
+): { trulyNew: FaaOperatorRow[]; existsByName: Array<{ row: FaaOperatorRow; operatorId: string }> } {
+  const trulyNew: FaaOperatorRow[] = [];
+  const existsByName: Array<{ row: FaaOperatorRow; operatorId: string }> = [];
+  for (const r of newRows) {
+    const norm = normalizeCanonicalName(r.name ?? "");
+    const existingId = existingByNormName.get(norm);
+    if (existingId) {
+      existsByName.push({ row: r, operatorId: existingId });
+    } else {
+      trulyNew.push(r);
+    }
+  }
+  return { trulyNew, existsByName };
+}
+
 // ── DB I/O ───────────────────────────────────────────────────────────────
 
 async function loadFaaOperators(
@@ -169,16 +206,90 @@ async function loadExistingFaaCerts(client: pg.PoolClient): Promise<Set<string>>
   return new Set(res.rows.map((r) => r.source_id));
 }
 
+/**
+ * One round-trip lookup of normalized canonical names already present in
+ * public.operators. Returns Map<normalizedName, operatorId>. Empty input
+ * returns an empty map without a query.
+ */
+async function loadExistingByNormalizedName(
+  client: pg.PoolClient,
+  rows: FaaOperatorRow[],
+): Promise<Map<string, string>> {
+  if (rows.length === 0) return new Map();
+  const norms = Array.from(
+    new Set(rows.map((r) => normalizeCanonicalName(r.name ?? ""))),
+  ).filter((s) => s.length > 0);
+  if (norms.length === 0) return new Map();
+  const res = await client.query<{ id: string; norm_name: string }>(
+    `SELECT id::text AS id,
+            LOWER(TRIM(REGEXP_REPLACE(canonical_name, '\s+', ' ', 'g'))) AS norm_name
+       FROM operators
+      WHERE LOWER(TRIM(REGEXP_REPLACE(canonical_name, '\s+', ' ', 'g'))) = ANY($1::text[])`,
+    [norms],
+  );
+  const map = new Map<string, string>();
+  for (const row of res.rows) map.set(row.norm_name, row.id);
+  return map;
+}
+
+/**
+ * Attach one operator_identities row per matched row to the existing operator.
+ * No operators INSERT — the operator already exists from a different source.
+ * ON CONFLICT (source, source_id) DO NOTHING keeps re-runs idempotent.
+ */
+async function bulkAttachIdentitiesToExisting(
+  client: pg.PoolClient,
+  matched: Array<{ row: FaaOperatorRow; operatorId: string }>,
+): Promise<{ identities: number }> {
+  if (matched.length === 0) return { identities: 0 };
+  const idValues: string[] = [];
+  const idParams: unknown[] = [];
+  matched.forEach((m, i) => {
+    const base = i * 4;
+    idValues.push(
+      `($${base + 1}, 'faa', $${base + 2}, $${base + 3}, 'exact', 'faa_cert_normalized_match', $${base + 4}::jsonb)`,
+    );
+    const evidence = {
+      method: "faa_registry_with_canonical_name_match",
+      cert_number: m.row.certificate_number,
+      matched_by: "normalized_canonical_name",
+    };
+    idParams.push(m.operatorId, m.row.certificate_number, m.row.name, JSON.stringify(evidence));
+  });
+  const res = await client.query(
+    `INSERT INTO operator_identities
+       (operator_id, source, source_id, name_as_provided,
+        match_confidence, match_method, match_evidence)
+     VALUES ${idValues.join(", ")}
+     ON CONFLICT (source, source_id) DO NOTHING`,
+    idParams,
+  );
+  return { identities: res.rowCount ?? 0 };
+}
+
 async function bulkInsertBatch(
   client: pg.PoolClient,
   newRows: FaaOperatorRow[],
-): Promise<{ operators: number; identities: number }> {
-  if (newRows.length === 0) return { operators: 0, identities: 0 };
+): Promise<{ operators: number; identities: number; mergedToExisting: number }> {
+  if (newRows.length === 0) return { operators: 0, identities: 0, mergedToExisting: 0 };
+
+  // Defensive split: rows whose canonical_name already matches an existing
+  // operator (under the UNIQUE index normalization) get an identity row
+  // attached only. Net-new rows go through the bulk operators+identities
+  // INSERT below.
+  const existingByNormName = await loadExistingByNormalizedName(client, newRows);
+  const { trulyNew, existsByName } = splitNewByCanonicalNameMatch(newRows, existingByNormName);
+
+  const merged = await bulkAttachIdentitiesToExisting(client, existsByName);
+
+  if (trulyNew.length === 0) {
+    return { operators: 0, identities: merged.identities, mergedToExisting: existsByName.length };
+  }
 
   // Bulk INSERT operators, preserving input order so we can align RETURNING ids.
   const opsValues: string[] = [];
   const opsParams: unknown[] = [];
-  newRows.forEach((r, i) => {
+  trulyNew.forEach((r, i) => {
     const p = classifyFaaOperator(r);
     const base = i * 3;
     opsValues.push(`($${base + 1}, $${base + 2}::TEXT[], $${base + 3})`);
@@ -191,16 +302,16 @@ async function bulkInsertBatch(
     opsParams,
   );
   const newIds = opsRes.rows.map((r) => r.id);
-  if (newIds.length !== newRows.length) {
+  if (newIds.length !== trulyNew.length) {
     throw new Error(
-      `operators INSERT returned ${newIds.length} rows, expected ${newRows.length}`,
+      `operators INSERT returned ${newIds.length} rows, expected ${trulyNew.length}`,
     );
   }
 
-  // Bulk INSERT operator_identities (one per new operator).
+  // Bulk INSERT operator_identities (one per net-new operator).
   const idValues: string[] = [];
   const idParams: unknown[] = [];
-  newRows.forEach((r, i) => {
+  trulyNew.forEach((r, i) => {
     const base = i * 4;
     idValues.push(
       `($${base + 1}, 'faa', $${base + 2}, $${base + 3}, 'exact', 'faa_cert_direct', $${base + 4}::jsonb)`,
@@ -216,7 +327,11 @@ async function bulkInsertBatch(
     idParams,
   );
 
-  return { operators: opsRes.rowCount ?? 0, identities: idRes.rowCount ?? 0 };
+  return {
+    operators: opsRes.rowCount ?? 0,
+    identities: (idRes.rowCount ?? 0) + merged.identities,
+    mergedToExisting: existsByName.length,
+  };
 }
 
 async function bumpLastVerified(
@@ -301,6 +416,7 @@ async function main(): Promise<void> {
     console.log(`[faa-backfill] Writing with transaction batches of ${BATCH_SIZE}...`);
     let insertedOps = 0;
     let insertedIds = 0;
+    let mergedToExisting = 0;
     await client.query("BEGIN");
     try {
       for (let i = 0; i < newRows.length; i += BATCH_SIZE) {
@@ -311,10 +427,14 @@ async function main(): Promise<void> {
         const r = await bulkInsertBatch(client, batch);
         insertedOps += r.operators;
         insertedIds += r.identities;
+        mergedToExisting += r.mergedToExisting;
       }
       const bumped = await bumpLastVerified(client, updateCerts);
       await client.query("COMMIT");
-      console.log(`[faa-backfill] Inserted ${insertedOps} operators + ${insertedIds} identities; bumped ${bumped} existing`);
+      console.log(
+        `[faa-backfill] Inserted ${insertedOps} operators + ${insertedIds} identities ` +
+          `(${mergedToExisting} merged to existing by normalized name); bumped ${bumped} existing`,
+      );
     } catch (err) {
       await client.query("ROLLBACK").catch(() => undefined);
       throw err;

@@ -303,6 +303,54 @@ async function writeNew(
   return { operatorId, identityId: res.rows[0]!.id };
 }
 
+/**
+ * Look up an existing operator whose canonical_name normalizes to the same
+ * value as the scraped name. Expression mirrors the UNIQUE index installed
+ * in 2026-05-05-001-operators-canonical-name-unique-idx.sql:
+ *   LOWER(TRIM(REGEXP_REPLACE(canonical_name, '\s+', ' ', 'g')))
+ *
+ * Pre-filter / scoring may have missed a normalize-equal name (whitespace
+ * or casing variant). Without this guard, writeNew would constraint-violate
+ * (Postgres 23505) on the UNIQUE index. With it, scraped records gracefully
+ * attach to the existing operator.
+ */
+async function findOperatorByNormalizedName(
+  client: pg.PoolClient,
+  name: string,
+): Promise<{ operatorId: string; canonicalName: string } | null> {
+  const res = await client.query<{ id: string; canonical_name: string }>(
+    `SELECT id::text AS id, canonical_name
+       FROM operators
+      WHERE LOWER(TRIM(REGEXP_REPLACE(canonical_name, '\s+', ' ', 'g')))
+          = LOWER(TRIM(REGEXP_REPLACE($1::text, '\s+', ' ', 'g')))
+      LIMIT 1`,
+    [name],
+  );
+  const row = res.rows[0];
+  return row ? { operatorId: row.id, canonicalName: row.canonical_name } : null;
+}
+
+async function writeMatchedByNormalize(
+  client: pg.PoolClient,
+  scraped: ScrapedRecord,
+  operatorId: string,
+  existingCanonicalName: string,
+): Promise<{ identityId: number }> {
+  const evidence: Record<string, unknown> = {
+    method: "name_normalized_match",
+    matched_canonical_name: existingCanonicalName,
+  };
+  const res = await client.query<{ id: number }>(
+    `INSERT INTO operator_identities
+       (operator_id, source, source_id, name_as_provided,
+        match_confidence, match_method, match_evidence)
+     VALUES ($1, $2, $3, $4, 'exact', 'name_normalized_match', $5::jsonb)
+     RETURNING id`,
+    [operatorId, scraped.source, scraped.sourceId, scraped.name, JSON.stringify(evidence)],
+  );
+  return { identityId: res.rows[0]!.id };
+}
+
 // ── Public entry point ───────────────────────────────────────────────────
 
 /**
@@ -516,6 +564,29 @@ async function runResolve(
 
   // 4. Execute the one write path.
   if (decision.action === "new") {
+    // Pre-filter / scoring may have missed a normalize-equal name (whitespace
+    // or casing variant). The UNIQUE index would 23505 the writeNew INSERT;
+    // check first and attach to the existing operator if found. topScore is
+    // null because the scorer didn't consider this operator — its score is
+    // meaningless for the normalize-match path.
+    const normalizeMatch = await findOperatorByNormalizedName(client, scraped.name);
+    if (normalizeMatch) {
+      const { identityId } = await writeMatchedByNormalize(
+        client,
+        scraped,
+        normalizeMatch.operatorId,
+        normalizeMatch.canonicalName,
+      );
+      return {
+        action: "matched",
+        operatorId: normalizeMatch.operatorId,
+        identityId,
+        reviewId: null,
+        matchConfidence: "exact",
+        topScore: null,
+        reason: null,
+      };
+    }
     const { operatorId, identityId } = await writeNew(client, scraped);
     return {
       action: "new",

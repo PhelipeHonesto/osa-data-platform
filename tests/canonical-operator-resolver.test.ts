@@ -178,6 +178,8 @@ describe("resolveOperator — zero candidates creates a new operator", () => {
     const { client, calls } = makeMockClient([
       { matcher: /UPDATE operator_identities/, rows: [] },
       { matcher: /FROM operators o/, rows: [] },
+      // Normalize-match guard runs before writeNew; empty result = miss.
+      { matcher: /SELECT[\s\S]+FROM operators[\s\S]+LOWER\(TRIM\(REGEXP_REPLACE\(canonical_name/, rows: [] },
       { matcher: /INSERT INTO operators/, rows: [] },
       { matcher: /INSERT INTO operator_identities/, rows: [{ id: 11 }] },
     ]);
@@ -191,6 +193,45 @@ describe("resolveOperator — zero candidates creates a new operator", () => {
     const opsIdx = calls.findIndex((c) => /INSERT INTO operators/i.test(c.sql));
     const idIdx = calls.findIndex((c) => /INSERT INTO operator_identities/i.test(c.sql));
     expect(opsIdx).toBeLessThan(idIdx);
+  });
+});
+
+describe("resolveOperator — normalize-match guard catches what scoring missed", () => {
+  it("attaches identity to existing operator when normalize-equal name exists", async () => {
+    // Pre-filter ILIKE returns no candidates (e.g., scraped first sig word
+    // doesn't surface the existing operator), so decide() returns 'new'.
+    // The new guard runs the normalize-match SELECT and finds the existing
+    // operator, so we should see no INSERT INTO operators and an
+    // operator_identities row attached to the existing id.
+    const { client, calls } = makeMockClient([
+      { matcher: /UPDATE operator_identities/, rows: [] }, // no exact short-circuit
+      { matcher: /FROM operators o/, rows: [] }, // pre-filter empty
+      // Normalize-match SELECT finds the existing operator
+      {
+        matcher: /SELECT[\s\S]+FROM operators[\s\S]+LOWER\(TRIM\(REGEXP_REPLACE\(canonical_name/,
+        rows: [{ id: "op-existing", canonical_name: "NetJets Aviation" }],
+      },
+      // Identity insert attached to op-existing (no operators INSERT)
+      { matcher: /INSERT INTO operator_identities/, rows: [{ id: 7777 }] },
+    ]);
+    const scraped = {
+      name: "  netjets   aviation  ",
+      source: "argus" as const,
+      sourceId: "ARG-NORM-001",
+    };
+    const result = await resolveOperator(scraped, client);
+    expect(result.action).toBe("matched");
+    expect(result.operatorId).toBe("op-existing");
+    expect(result.identityId).toBe(7777);
+    expect(result.matchConfidence).toBe("exact");
+    expect(result.topScore).toBeNull(); // scorer didn't see the matched op
+    // No operators INSERT — the existing operator is reused.
+    expect(calls.some((c) => /INSERT INTO operators[^_]/i.test(c.sql))).toBe(false);
+    // Identity row uses match_method='name_normalized_match' and preserves
+    // the scraped name verbatim (whitespace + casing) in name_as_provided.
+    const idCall = calls.find((c) => /INSERT INTO operator_identities/i.test(c.sql))!;
+    expect(idCall.sql).toMatch(/'name_normalized_match'/);
+    expect(idCall.params[3]).toBe("  netjets   aviation  ");
   });
 });
 
