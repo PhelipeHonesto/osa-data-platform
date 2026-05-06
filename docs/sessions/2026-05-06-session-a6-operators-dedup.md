@@ -202,6 +202,16 @@ showing byte-level dumps.
   code fix prevents the work-around (entire-string different
   source_id but same normalized canonical_name should hit the existing
   operator, not insert a new one).
+  **Resolved 2026-05-06 (Session A.7, commit `fe9fc17`)**: two unsafe
+  paths confirmed (`operator-resolver.ts` writeNew using
+  `match_method='self_creation'`, and `backfill-operators-canonical-faa.ts`
+  bulkInsertBatch using `match_method='faa_cert_direct'`); both now run a
+  pre-INSERT SELECT against the same `LOWER(TRIM(REGEXP_REPLACE(...)))`
+  expression as the UNIQUE index and attach an `operator_identities` row
+  to the existing operator on hit. New `match_method` values
+  `'name_normalized_match'` and `'faa_cert_normalized_match'` distinguish
+  the merge path. Defensive only — no scheduled cron invokes either
+  loader today; the change keeps the next manual re-run from 23505-ing.
 - **Extend dedup script to the 5 additional FK columns** — only a problem
   the next time we dedup an operator that has rows in
   `operator_holds_certificate_pending`, `operator_events.predecessor_id`,
