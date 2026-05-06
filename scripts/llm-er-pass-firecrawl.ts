@@ -960,9 +960,9 @@ EX3. Rebrand to canonical successor:
       ... (citations + reasoning, evidence: cert_designator persists across rebrand)
     }
 
-EX4. Defunct operator with revoked cert linked to canonical successor (F4):
-  HOLDER NAME: "Acme Air LLC" (FAA registry shows cert REVOKED 2024)
-  Top candidate: "Acme Aviation" (id=dddddddd-4444-..., the survivor entity that absorbed the fleet)
+EX4. Defunct operator with surrendered cert linked to canonical successor (F4):
+  HOLDER NAME: "Delta Private Jets, Inc." (FAA cert surrendered 2020 after Wheels Up acquisition)
+  Top candidate: "Wheels Up Private Jets LLC" (id=dddddddd-4444-..., the survivor entity that absorbed the fleet)
   Output:
     {
       "decision": "match",
@@ -970,10 +970,11 @@ EX4. Defunct operator with revoked cert linked to canonical successor (F4):
       "decision_subtype": "rebrand_to_canonical",
       "decision_subtype_extras": {
         "brand_role": null,
-        "event_type": "cert_revocation",
+        "event_type": "cert_surrender",
         "intended_event_type": null
       },
-      ... (citations: faa.gov registry showing revoked status, plus aggregator confirming Acme Aviation as successor)
+      "reasoning": "Delta Private Jets was acquired by Wheels Up in 2020; FAA cert was surrendered after consolidation into Wheels Up Private Jets LLC.",
+      ... (citations: faa.gov registry showing surrendered status, plus aggregator confirming Wheels Up as acquirer)
     }
 
 EX5. Subtypes that need NO extras (exact_alias, distinct_legal_entity, distinct_brand):
