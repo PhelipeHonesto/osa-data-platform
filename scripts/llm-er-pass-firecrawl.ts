@@ -131,6 +131,13 @@ const SOURCE_BUCKETS = new Map<string, string>([
   ["www.ntsb.gov", "tier1_ntsb"],
   ["sec.gov", "tier1_sec"],
   ["www.sec.gov", "tier1_sec"],
+  // DOT regulatory filings (Part 295 brokers, Part 121/135 air-carrier
+  // applications, M&A/rebrand notices). Authoritative single-source per
+  // V3.2 finding (Keystone → Elevate Jet rebrand was confirmable in 30s
+  // via regulations.gov DOT-OST-2024-0105 search).
+  ["regulations.gov", "tier1_dot"],
+  ["www.regulations.gov", "tier1_dot"],
+  ["downloads.regulations.gov", "tier1_dot"],
   // Tier 3 — aggregators share a single bucket (LLM-aggregator clause)
   ["corporatejetinvestor.com", "tier3_aggregator"],
   ["www.corporatejetinvestor.com", "tier3_aggregator"],
@@ -790,8 +797,13 @@ is a brand-member (subsidiary/sister) of one, represents a structural
 event (rebrand/M&A/cert lifecycle), is a genuinely new entity, or
 requires human review.
 
-PROMPT VERSION: V3 (Cohort A — FAA holder-name-vs-canonical task,
+PROMPT VERSION: V3.2 (Cohort A — FAA holder-name-vs-canonical task,
 Session B per docs/plans/llm-er-pass-design.md)
+  V3   = base 6-section structure + F1-F4+F6 + worked examples
+  V3.1 = added F7 successor-not-in-pool + PRE-SUBMISSION SELF-CHECK
+  V3.2 = added Tier 1 search-then-scrape workflow,
+         regulations.gov / DOT bucket (tier1_dot),
+         tightened F7 to require verbatim quote naming successor
 
 ═══════════════════════════════════════════════════════════════════════
 INPUT RECORD — operator name from FAA Part 135 records
@@ -812,7 +824,9 @@ You have up to ${FIRECRAWL_MAX_PAGES_PER_RECORD} Firecrawl page fetches.
 Spend them in tier order:
 
   Tier 1 (authoritative, 1-3 fetches): faa.gov registry inquiry,
-    sec.gov for public-company filings, ntsb.gov for accident attribution.
+    sec.gov public-company filings, ntsb.gov accident attribution,
+    regulations.gov DOT filings (M&A/rebrand notices, Part 121/135
+    applications, Part 295 broker filings).
     Tier 1 alone often resolves the question — try here FIRST.
   Tier 2 (operator self, 0-2 fetches): operator's own website
     (try https://www.{normalized_lowercase}.com or DBA equivalent).
@@ -821,6 +835,29 @@ Spend them in tier order:
     Week, FlightGlobal, Corporate Jet Investor, Loud Hawk. ALL of these
     share ONE Two-Source bucket — pairing two of them does NOT satisfy
     the Two-Source Rule.
+
+Tier 1 research workflow — REQUIRED for hard cases (rebrands, M&A,
+defunct certs, name ambiguity). Direct-URL guessing fails when the
+authoritative source's URL structure isn't predictable:
+
+  a. firecrawl_search('<holder name> + cert/rebrand/M&A')
+     Use multiple query variants if the first returns thin results,
+     e.g. '<holder name> FAA Part 135', '<holder name> acquisition',
+     '<holder name> Elevate Jet' (or whatever successor name surfaces).
+  b. From search results, identify Tier 1 URLs (faa.gov, sec.gov,
+     ntsb.gov, regulations.gov DOT filings, etc.) and Tier 2 URLs
+     (the operator's own site).
+  c. firecrawl_scrape those URLs to capture verbatim quotes. The
+     scraped page is what counts — not the search snippet.
+  d. Citation validation requires verbatim quotes from SCRAPED pages.
+     Search snippets are NOT valid citations on their own — even if
+     the snippet is correct, you must scrape the full page and quote
+     from the scraped content. The driver's substring check runs
+     against firecrawl_pages[].content, not search snippets.
+
+If a Tier 1 source like av-info.faa.gov returns 503/timeout, fall
+back to other Tier 1 (regulations.gov, sec.gov) before tier 2/3.
+Don't skip Tier 1 entirely just because one URL failed.
 
 NOTE: Tier 1 success does NOT terminate the research. The Two-Source
 Rule requires citations from ≥2 distinct buckets regardless of which
@@ -853,17 +890,19 @@ TWO-SOURCE RULE — non-negotiable for non-ambiguous decisions
 For decision='match' or 'new_entity', citations must come from ≥2 DISTINCT
 SOURCE BUCKETS (NOT just distinct domains). Bucket map:
 
-  - faa.gov / registry.faa.gov / av-info.faa.gov  → bucket 'tier1_faa'
-  - ntsb.gov / data.ntsb.gov                      → bucket 'tier1_ntsb'
-  - sec.gov / www.sec.gov                         → bucket 'tier1_sec'
-  - corporatejetinvestor.com, bjtonline.com,      → bucket 'tier3_aggregator'
-    ainonline.com, aviationweek.com,                (ALL share one bucket)
+  - faa.gov / registry.faa.gov / av-info.faa.gov          → 'tier1_faa'
+  - ntsb.gov / data.ntsb.gov                              → 'tier1_ntsb'
+  - sec.gov / www.sec.gov                                 → 'tier1_sec'
+  - regulations.gov / downloads.regulations.gov           → 'tier1_dot'
+  - corporatejetinvestor.com, bjtonline.com,              → 'tier3_aggregator'
+    ainonline.com, aviationweek.com,                        (ALL share one bucket)
     flightglobal.com, loudhawk.com,
     en.wikipedia.org, wikipedia.org
-  - any other domain (operator self, state SOS,    → bucket 'tier2_<rootdomain>'
-    foreign registry)                                (each its own bucket)
+  - any other domain (operator self, state SOS,            → 'tier2_<rootdomain>'
+    foreign registry)                                        (each its own bucket)
 
-Two FAA URLs = ONE bucket. FAA + Wikipedia = TWO buckets. Wikipedia + AIN
+Two FAA URLs = ONE bucket. FAA + DOT regulations.gov = TWO buckets
+(different authorities). FAA + Wikipedia = TWO buckets. Wikipedia + AIN
 = ONE bucket (both aggregators). FAA + operator-own-site = TWO buckets.
 
 If only one bucket is available, return decision='ambiguous' with
@@ -914,6 +953,16 @@ F7. Successor exists in real world but not in candidate pool.
     operator just because they share a name fragment. Specifically, do
     NOT use subsidiary_of_canonical as a workaround for a missing rebrand
     target — that mis-shapes the structural data.
+
+    F7 citation requirement: empty verbatim_quotes is NOT enough. To
+    invoke F7 you MUST cite at least one source naming the successor
+    entity by name, with the verbatim quote captured per anti-
+    hallucination rules. Reasoning alone (e.g. "I read somewhere that
+    Keystone became Elevate Jet") is insufficient — produce the
+    verbatim quote from a scraped page. If sources are unreachable or
+    the successor name can't be confirmed via citation, return
+    decision='ambiguous' with reasoning='research_inconclusive_no_F7_evidence'
+    rather than falsely citing F7.
 
 ═══════════════════════════════════════════════════════════════════════
 WORKED EXAMPLES — five compact decisions illustrating the schema
