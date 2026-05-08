@@ -49,6 +49,7 @@
     "mcp:serve": "tsx src/mcp/cli.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.95.0",
     "@aws-sdk/client-s3": "^3.1029.0",
     "@aws-sdk/lib-storage": "^3.1029.0",
     "@dsnp/parquetjs": "^1.8.7",

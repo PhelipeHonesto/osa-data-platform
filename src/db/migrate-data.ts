@@ -91,8 +91,14 @@ const TABLES: TableDef[] = [
   { name: "deal_outcomes", tier: 5, batchSize: 100 },
   { name: "route_intel", tier: 5, batchSize: 100,
     jsonbCols: new Set(["top_operators"]) },
-  { name: "operator_profiles", tier: 5, batchSize: 100, conflictKeys: ["name"],
-    jsonbCols: new Set(["certs", "fleet"]) },
+  // operator_profiles removed from SQLite→Postgres sync as of migration
+  // 2026-05-06-001 (operator-profiles-rebuild). The Postgres operator_profiles
+  // is now Postgres-native — keyed on faa_cert_number, populated by the
+  // profile-builder agent (scripts/profile-builder/), not synced from SQLite.
+  // SQLite still has the old transactional shape from src/db/migrations.ts
+  // for dumont-agent quoting heuristics; that lives independently.
+  // { name: "operator_profiles", tier: 5, batchSize: 100, conflictKeys: ["name"],
+  //   jsonbCols: new Set(["certs", "fleet"]) },
   { name: "client_profiles", tier: 5, batchSize: 100,
     jsonbCols: new Set(["deal_history", "preferred_routes"]) },
   { name: "messages", tier: 5, batchSize: 500, conflictKeys: ["id"],
