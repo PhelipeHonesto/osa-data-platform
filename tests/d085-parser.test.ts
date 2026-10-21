@@ -13,7 +13,11 @@ const MAY_1_URL =
   "https://www.faa.gov/sites/faa.gov/files/Part%20135_Operators_and_Aircraft_List.xlsx";
 const TMP_PATH_A = `/tmp/osa-session-a5-test-${process.pid}-A.xlsx`;
 
-describe("d085-parser — May 1 dialect (Test A)", () => {
+// Live-data tests: hit faa.gov and the private S3 archive. Opt in with
+// RUN_LIVE_TESTS=1 (needs network + AWS credentials). Skipped in CI.
+const LIVE = process.env.RUN_LIVE_TESTS === "1";
+
+describe.skipIf(!LIVE)("d085-parser — May 1 dialect (Test A)", () => {
   it("parses 11,465 rows from the live May 1 Part 135 file with correct schema", async () => {
     try {
       const resp = await fetch(MAY_1_URL);
@@ -64,7 +68,7 @@ describe("d085-parser — May 1 dialect (Test A)", () => {
   }, 60_000);
 });
 
-describe("d085-parser — historical dialect (Test B)", () => {
+describe.skipIf(!LIVE)("d085-parser — historical dialect (Test B)", () => {
   it("parses an older D085 archive and still extracts cert + name", async () => {
     const s3 = new S3Client({});
 
